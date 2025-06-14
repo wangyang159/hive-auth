@@ -52,7 +52,7 @@ logger.hook3.level = INFO
  Target Server Version : 50725
  File Encoding         : 65001
 
- Date: 14/06/2025 12:33:53
+ Date: 14/06/2025 15:57:38
 */
 
 SET NAMES utf8mb4;
@@ -70,12 +70,12 @@ CREATE TABLE `db_tb_auth`  (
                                `auth_flag` int(2) NULL DEFAULT NULL COMMENT '权限标识： 1 读取权限 ; 0 无任何权限',
                                `last_time` datetime(0) NULL DEFAULT NULL COMMENT '权限的到期时间',
                                PRIMARY KEY (`auth_id`) USING BTREE,
-                               UNIQUE INDEX `表字段索引`(`field`) USING BTREE,
                                INDEX `表信息外键`(`db_tb_id`) USING BTREE,
                                INDEX `用户信息外键`(`user_id`) USING BTREE,
-                               CONSTRAINT `表信息外键` FOREIGN KEY (`db_tb_id`) REFERENCES `db_tb_info` (`db_tb_id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
-                               CONSTRAINT `用户信息外键` FOREIGN KEY (`user_id`) REFERENCES `user_info` (`user_id`) ON DELETE RESTRICT ON UPDATE RESTRICT
-) ENGINE = InnoDB AUTO_INCREMENT = 4 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+                               INDEX `表字段索引`(`field`) USING BTREE,
+                               CONSTRAINT `用户信息外键` FOREIGN KEY (`user_id`) REFERENCES `user_info` (`user_id`) ON DELETE RESTRICT ON UPDATE RESTRICT,
+                               CONSTRAINT `表信息外键` FOREIGN KEY (`db_tb_id`) REFERENCES `db_tb_info` (`db_tb_id`) ON DELETE RESTRICT ON UPDATE RESTRICT
+) ENGINE = InnoDB AUTO_INCREMENT = 6 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Table structure for db_tb_info
@@ -86,7 +86,7 @@ CREATE TABLE `db_tb_info`  (
                                `db_tb_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '库名_表名',
                                PRIMARY KEY (`db_tb_id`) USING BTREE,
                                UNIQUE INDEX `表名称索引`(`db_tb_name`) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 2 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+) ENGINE = InnoDB AUTO_INCREMENT = 3 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Table structure for user_info
