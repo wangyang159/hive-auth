@@ -1,0 +1,32 @@
+#名字叫 hook 的日志
+logger.hook.name = com.wy.auth.MyHiveAuthorization
+#输出级别
+logger.hook.level = INFO
+#不继承父日志的配置
+logger.hook.additivity = false
+#关联一个自定义日志输出策略RuloPlu
+logger.hook.appenderRef.rolling.ref = RuloPlu
+
+#策略名字
+appender.rolling.name = RuloPlu
+#滚动日志
+appender.rolling.type = RollingFile
+#再用日志地址
+appender.rolling.fileName = /opt/hive-3.1.3/logs/hook.log
+#滚动的历史日志地址
+appender.rolling.filePattern = /opt/hive-3.1.3/logs/hook-%d{yyyy-MM-dd}.log.gz
+#绑定一个输出策略，类型为PatternLayout
+appender.rolling.layout.type = PatternLayout
+# %d{ISO8601} 时间戳
+# %-5p 日志正文左对齐的间隔
+# [%t]: 线程名称
+# %c{2}: 那个类输出的这个日志，只输出两个层级
+# %m 正文
+# %n: 换行
+appender.rolling.layout.pattern = %d{ISO8601} %-5p [%t] %c{2}: %m%n
+#滚动策略类型
+appender.rolling.policies.type = Policies
+#按时间滚动
+appender.rolling.policies.time.type = TimeBasedTriggeringPolicy
+#滚动的偏移量
+appender.rolling.policies.time.interval = 1
