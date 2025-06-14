@@ -149,9 +149,9 @@ public class MyHiveAuthorization implements HiveAuthorizer {
                 try {
                     //通过元数据连接获取这个表
                     table = metastoreClient.getTable(dbName, tblName);
-                    //成功获取到表对象，且表不是临时表，获取到的字段也不为空，则放到要鉴权的表信息集合中
+                    //成功获取到表对象，且表不是临时表，获取到的字段也不为空，当前用户不是查询表的owner，则放到要鉴权的表信息集合中
                     //isTemporary判断是否是临时表，临时表只在一次session中存在，元数据不存在元数据服务中而是在内存中，比如你with as 的临时表这种
-                    if (null != table && !table.isTemporary() && null != checkfieldList && !checkfieldList.isEmpty()) {
+                    if (null != table && !table.isTemporary() && null != checkfieldList && !checkfieldList.isEmpty() && !table.getOwner().equals(hiveAuthProvider.getUserName())) {
                         checkPrivilegeObject.put(dbName + "." + tblName, checkfieldList);
                     }
                 } catch (TException e) {

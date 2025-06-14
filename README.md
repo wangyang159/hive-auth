@@ -1,7 +1,8 @@
 当前插件将hive自带的权限语句屏蔽掉了，采用外部鉴权数据，因此下面需要配置鉴权数据库
 
-注意，该插件只使用了鉴权库中的数据，主要是读取，至于表owner的权限并不是来自于鉴权库，而是依赖hive元数据服务中存储的owner
-因此不会发生任何写的操作，对于丰富的赋权场景，需要自行准备外部权限系统
+注意，该插件只使用了鉴权库中的数据，主要是读取，至于表owner的相关权限并不是来自于鉴权库
+而是依赖hive元数据服务中存储的owner ，不对表owner做鉴权
+因此不会发生任何写的操作，对于丰富的赋权场景，需要自行准备外部权限系统，将权限信息写入写入权限库即可
 
 <hr/>
 
@@ -101,7 +102,7 @@ CREATE TABLE `user_info`  (
 
 SET FOREIGN_KEY_CHECKS = 1;
 ```
-4、将权限库的连接信息，写在hive的site文件中
+4、将权限库的连接信息，写在hive的hive-site.xml文件中
 ```
 <property>
     <name>hive.auth.database.url</name>
@@ -118,7 +119,8 @@ SET FOREIGN_KEY_CHECKS = 1;
     <value>123456</value>
 </property>
 
-<!-- 设置最大连接数 默认 5 ，不可超过无符号Int范围，按照每个hive会话一次连接来决定就行，因为鉴权类的生命周期就是一个会话提交第一个sql开始到连接断开-->
+<!-- 设置最大连接数 默认 10 ，不可超过无符号Int范围，按照每个hive会话内的一次sql运行来决定就行
+因为鉴权类的生命周期就是一个会话提交第一个sql开始到连接断开，而鉴权流程是每一个select-sql执行都会有一个线程池和连接池并行鉴权-->
 <property>
     <name>hive.auth.database.hikari.pool.maxsize</name>
     <value>10</value>
