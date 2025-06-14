@@ -23,6 +23,8 @@ public class MysqlUtil {
     private HikariDataSource dataSource = null;
 
     private static String url;
+    private static String dirver;
+    private static Long timeout;
     private static String username;
     private static String password;
     private static int hp_maxsize;
@@ -40,8 +42,10 @@ public class MysqlUtil {
      * @param hp_id_timeout
      * @param hp_lefttime
      */
-    public static void init(String url,String username,String password,int hp_maxsize,int hp_minidle,long hp_id_timeout,long hp_lefttime){
+    public static void init(String url,String driver,Long timeout,String username,String password,int hp_maxsize,int hp_minidle,long hp_id_timeout,long hp_lefttime){
         MysqlUtil.url = url;
+        MysqlUtil.dirver = driver;
+        MysqlUtil.timeout = timeout;
         MysqlUtil.username = username;
         MysqlUtil.password = password;
         MysqlUtil.hp_maxsize = hp_maxsize;
@@ -56,10 +60,31 @@ public class MysqlUtil {
     public MysqlUtil() {
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl(MysqlUtil.url);
+        config.setDriverClassName(MysqlUtil.dirver);
+        config.setConnectionTimeout(MysqlUtil.timeout);
         config.setUsername(MysqlUtil.username);
         config.setPassword(MysqlUtil.password);
         config.setMaximumPoolSize(MysqlUtil.hp_maxsize);
         config.setMinimumIdle(MysqlUtil.hp_minidle);
+        config.setIdleTimeout(MysqlUtil.hp_id_timeout);
+        config.setMaxLifetime(MysqlUtil.hp_lefttime);
+        dataSource = new HikariDataSource(config);
+    }
+
+    /**
+     * 代码中动态指定连接池大小的构造器
+     * @param hp_maxsize
+     * @param hp_minidle
+     */
+    public MysqlUtil(int hp_maxsize,int hp_minidle) {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(MysqlUtil.url);
+        config.setDriverClassName(MysqlUtil.dirver);
+        config.setConnectionTimeout(MysqlUtil.timeout);
+        config.setUsername(MysqlUtil.username);
+        config.setPassword(MysqlUtil.password);
+        config.setMaximumPoolSize(hp_maxsize);
+        config.setMinimumIdle(hp_minidle);
         config.setIdleTimeout(MysqlUtil.hp_id_timeout);
         config.setMaxLifetime(MysqlUtil.hp_lefttime);
         dataSource = new HikariDataSource(config);

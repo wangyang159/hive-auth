@@ -1,6 +1,7 @@
 package com.wy.meta;
 
 import com.wy.utils.FieldDiff;
+import com.wy.utils.MysqlUtil;
 import com.wy.utils.UserUtil;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.MetaStoreEventListener;
@@ -13,6 +14,7 @@ import org.apache.hadoop.hive.ql.session.SessionState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.sql.*;
 import java.util.Iterator;
 import java.util.List;
 
@@ -70,7 +72,8 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         LOGGER.info("---------------------");
 
         /*
-        下面就是按需将权限写入你的外部系统中
+        下面就是按需将权限写入你的外部系统中，当然这只在需要给非owner权限的情况下
+        应为owner的权限在鉴权时，使用了元数据服务中的owner做判断，当操作表的用户不是owner才会走鉴权库相关逻辑
          */
     }
 
@@ -102,9 +105,26 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         LOGGER.info("|当前执行用户是       ： " + userName);
         LOGGER.info("---------------------");
 
-        /*
-        下面就是按需将你外部系统中的权限删掉
-         */
+        //将外部权限库中的表、字段全系数据删除
+        MysqlUtil mysqlUtil = new MysqlUtil(1, 0);
+        Connection connection=null;
+        StringBuilder sql = new StringBuilder();
+        try {
+            connection = mysqlUtil.getConnection();
+            CallableStatement callableStatement = connection.prepareCall("{call DeleteTableAndAuth(?)}");
+            callableStatement.setString(1,dbName+"."+tableName);
+            ResultSet resultSet = callableStatement.executeQuery();
+            ResultSetMetaData metaData = resultSet.getMetaData();
+            if (metaData.getColumnCount() == 3){
+                resultSet.next();
+                LOGGER.info("权限回收 表:{} 回收权限个数:{} 回收表信息个数:{}",dbName+"."+tableName,resultSet.getInt("auth_records_deleted"),resultSet.getInt("info_records_deleted"));
+            } else if (metaData.getColumnCount() == 2) {
+                LOGGER.info("未发现可回收权限 表:{}",dbName+"."+tableName);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+            throw new MetaException("清理表权限信息出现异常");
+        }
     }
 
     @Override

@@ -4,6 +4,9 @@
 而是依赖hive元数据服务中存储的owner ，不对表owner做鉴权
 因此不会发生任何写的操作，对于丰富的赋权场景，需要自行准备外部权限系统，将权限信息写入写入权限库即可
 
+目前由于只控制到了读取权限相关操作，所以对于权限变动的操作，比如表被删除、新表是否给其他人默认权限、表字段更改
+等等，诸如此类的变化操作需要按需更改源码
+
 <hr/>
 
 1、将下面的内容存在就修改到hive-site.xml中
@@ -100,6 +103,52 @@ CREATE TABLE `user_info`  (
                               UNIQUE INDEX `用户名称索引`(`user_name`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 2 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
+-- ----------------------------
+-- 删除表触发的存储过程
+-- ----------------------------
+DELIMITER //
+CREATE PROCEDURE DeleteTableAndAuth(IN in_db_tb_name VARCHAR(100))
+BEGIN
+    DECLARE in_db_tb_id INT;
+    DECLARE auth_deleted INT DEFAULT 0;
+    DECLARE info_deleted INT DEFAULT 0;
+    
+    -- 查找表ID
+    SELECT db_tb_id INTO in_db_tb_id
+    FROM db_tb_info
+    WHERE db_tb_name = in_db_tb_name
+    LIMIT 1;
+
+    -- 如果找到表
+    IF in_db_tb_id IS NOT NULL THEN
+        START TRANSACTION;
+        
+        -- 删除权限记录
+        DELETE FROM db_tb_auth
+        WHERE db_tb_id = in_db_tb_id;
+        SET auth_deleted = ROW_COUNT();
+        
+        -- 删除表信息
+        DELETE FROM db_tb_info
+        WHERE db_tb_id = in_db_tb_id;
+        SET info_deleted = ROW_COUNT();
+
+        COMMIT;
+
+        -- 返回删除统计
+        SELECT
+            in_db_tb_name AS table_name,
+            auth_deleted AS auth_records_deleted,
+            info_deleted AS info_records_deleted;
+    ELSE
+        -- 返回未找到信息
+        SELECT
+            in_db_tb_name AS table_name,
+            'Table not found' AS message;
+    END IF;
+END //
+DELIMITER ;
+
 SET FOREIGN_KEY_CHECKS = 1;
 ```
 4、将权限库的连接信息，写在hive的hive-site.xml文件中
@@ -107,6 +156,18 @@ SET FOREIGN_KEY_CHECKS = 1;
 <property>
     <name>hive.auth.database.url</name>
     <value>jdbc:mysql://192.168.0.110:3306/shop?useUnicode=true&amp;characterEncoding=UTF-8&amp;serverTimezone=Asia/Shanghai</value>
+</property>
+
+<-- 这里用的是mysql5.x的连接驱动，如果你用的是mysql8就需要从自己编译一下 -->
+<property>
+    <name>hive.auth.database.driver</name>
+    <value>com.mysql.jdbc.Driver</value>
+</property>
+
+<-- 链接超时 默认5秒 -->
+<property>
+    <name>hive.auth.database.timeout</name>
+    <value>5000</value>
 </property>
 
 <property>
