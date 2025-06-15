@@ -35,7 +35,17 @@
 
 <hr/>
 
-1、将下面的内容存在就修改到hive-site.xml中
+使用方式：
+
+1、拉取源码，并更改pom中hadoop和hive版本为具体使用版本，默认是hadoop3.2.3 + hive3.1.3，之后编译
+```bash
+git clone https://github.com/wangyang159/hive-auth.git
+cd hive-auth
+mvn -DskipTests=true clean package
+```
+结果hivePlu.jar，会出现在target目录下，将它放入hive的lib目录中
+
+2、将下面的内容存在就修改到hive-site.xml中
 
 ```
 <property>
@@ -59,7 +69,7 @@
 </property>
 ```
 
-2、打开hive-log4j
+3、打开hive-log4j
 
 找到已有的 loggers 并在后面追加三个插件用的日志类
 ```properties
@@ -69,17 +79,20 @@
 #追加后：
 loggers = NIOServerCnxn, ClientCnxnSocketNIO, DataNucleus, Datastore, JPOX, PerfLogger, AmazonAws, ApacheHttp, MyHiveAuth, MyMetaStore, MyMetaPreStore
 ```
+
 另起一行追加如下内容
 ```properties
 logger.MyHiveAuth.name = com.wy.auth.MyHiveAuthorizationFactory
 logger.MyHiveAuth.level = INFO
+
 logger.MyMetaStore.name = com.wy.meta.MyMetaStoreEventListener
 logger.MyMetaStore.level = INFO
+
 logger.MyMetaPreStore.name = com.wy.meta.MyMetaStorePreEventListener
 logger.MyMetaPreStore.level = INFO
 ```
 
-3、整体上采用外部鉴权数据，因此下面需要配置鉴权数据库，在并准备好的鉴权库中执行如下语句，生成权限表
+4、整体上采用外部鉴权数据，因此下面需要配置鉴权数据库，在并准备好的鉴权库中执行如下语句，生成权限表
 
 ```sql
 /*
@@ -190,7 +203,7 @@ DELIMITER ;
 
 SET FOREIGN_KEY_CHECKS = 1;
 ```
-4、将权限库的连接信息，写在hive的hive-site.xml文件中
+5、将权限库的连接信息，写在hive的hive-site.xml文件中
 
 ```
 <property>
