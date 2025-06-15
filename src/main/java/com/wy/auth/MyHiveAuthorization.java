@@ -181,19 +181,33 @@ public class MyHiveAuthorization implements HiveAuthorizer {
             //由于是自定义权限，所以与之相关的语句不再允许执行
             throw new HiveAuthzPluginException("不支持原生Hive赋权操作");
 
-        } else if (hiveOpType == HiveOperationType.TRUNCATETABLE) {
-            //只有表 owner 才有表的写相关权限
+        } else if (hiveOpType == HiveOperationType.TRUNCATETABLE ) {
+            //只有表 owner 才有表的写相关的权限
             String dbName = outputHObjs.get(0).getDbname();
             String tblName = outputHObjs.get(0).getObjectName();
             try {
                 metastoreClient = metastoreClientFactory.getHiveMetastoreClient();
                 table = metastoreClient.getTable(dbName, tblName);
                 metastoreClient.close();
-                if ( hiveAuthProvider.getUserName().equals( table.getOwner() )){
+                if ( !hiveAuthProvider.getUserName().equals( table.getOwner() )){
                     throw new HiveAuthzPluginException("清空表数据需要owner权限");
                 }
             } catch (TException e) {
-                throw new HiveAuthzPluginException("清空表数据鉴权 , 获取表信息失败. ms:" + e.getMessage());
+                throw new HiveAuthzPluginException("鉴权 , 获取表信息失败. ms:" + e.getMessage());
+            }
+
+        } else if (hiveOpType == HiveOperationType.DESCTABLE) {
+            String dbName = inputHObjs.get(0).getDbname();
+            String tblName = inputHObjs.get(0).getObjectName();
+            try {
+                metastoreClient = metastoreClientFactory.getHiveMetastoreClient();
+                table = metastoreClient.getTable(dbName, tblName);
+                metastoreClient.close();
+                if ( !hiveAuthProvider.getUserName().equals( table.getOwner() ) ){
+                    throw new HiveAuthzPluginException("展示表详情信息数据需要owner权限");
+                }
+            } catch (TException e) {
+                throw new HiveAuthzPluginException("鉴权 , 获取表信息失败. ms:" + e.getMessage());
             }
 
         } else {

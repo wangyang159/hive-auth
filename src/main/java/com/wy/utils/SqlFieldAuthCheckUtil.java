@@ -162,23 +162,19 @@ public class SqlFieldAuthCheckUtil {
         try {
             connection = mysqlUtil.getConnection();
             ResultSet resultSet = connection.prepareStatement(sql.toString()).executeQuery();
-            sql.delete(0,sql.length());
 
-            //如果权限记录和要鉴权的字段数量不一致则抛出异常
-            if ( !resultSet.last() ){
+            //复用stringbuilder
+            sql.delete(0,sql.length());
+            //如果返回的已有权限不为空集合,也就是last方法返回了true，并且最后一行的行号和查询字段数不一样，说明权限不够，则拼接出已有的权限列
+            resultSet.last();//后期改造不要把这个方法放在if体里面，会无法命中
+            if ( resultSet.getRow() != fields.size()){
                 no_sqlp = true;
-                throw new HiveAuthzPluginException(table+" 没有任务读取权限");
-            }
-            if ( resultSet.getRow() != fields.size() ){
-                resultSet.beforeFirst();
-                //复用stringbuilder 凭借出已有的权限列
                 sql.append("[ ");
                 while (resultSet.next()){
                     sql.append(resultSet.getString("field")).append(" ");
                 }
                 sql.append("]");
-                no_sqlp = true;
-                throw new HiveAuthzPluginException(table+" 读取权限不足! 目标权限："+fields+"  拥有权限："+sql.toString());
+                throw new HiveAuthzPluginException(table+" 没有足够的权限，访问字段："+fields+" 已有权限："+sql.toString());
             }
             //除此之外权限正常通过
 

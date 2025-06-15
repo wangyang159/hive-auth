@@ -4,7 +4,7 @@ logger.hook.name = com.wy.auth.MyHiveAuthorization
 logger.hook.level = INFO
 #不继承父日志的配置
 logger.hook.additivity = false
-#关联一个自定义日志输出策略RuloPlu
+#关联一个自定义滚动日志输出策略RuloPlu
 logger.hook.appenderRef.rolling.ref = RuloPlu
 
 #策略名字

@@ -1,11 +1,37 @@
-当前插件将hive自带的权限语句屏蔽掉了，采用外部鉴权数据，因此下面需要配置鉴权数据库
+当前插件已实现的能力如下表
 
-注意，该插件只使用了鉴权库中的数据，主要是读取，至于表owner的相关权限并不是来自于鉴权库
-而是依赖hive元数据服务中存储的owner ，不对表owner做鉴权
-因此不会发生任何写的操作，对于丰富的赋权场景，需要自行准备外部权限系统，将权限信息写入写入权限库即可
+| 功能点                      | 当前插件实现                                                                                                          | 二次改造代码地点                                                   |
+|--------------------------|-----------------------------------------------------------------------------------------------------------------|------------------------------------------------------------|
+| hive原生自带授权语句             | 屏蔽                                                                                                              | MyHiveAuthorization.checkPrivileges                        |
+| 普通查询，或结果集建表、结果集插入表       | 当前用户是否为落盘表owner，否则直接拒绝，内部对下游权限对象操作做了判断，因此结果集建表并不会触发不在预期内的权限检查<br/><br/>当前用户是否为查询表owner，否则进行字段级鉴权                | MyHiveAuthorization.checkPrivileges                        |
+| 查询表是否允许越过字段              | 不允许select语句不携带任何字段，例如select count(1) from a                                                                     | MyHiveAuthorization.checkPrivileges                        |
+| 清空表数据                    | 当前用户是否为操作表的owner，否则直接拒绝                                                                                         | MyHiveAuthorization.checkPrivileges                        |
+| 展示表或库资源列表                | 并没有做特别过滤，目前是hive返回什么就展示什么                                                                                       | MyHiveAuthorization.filterListCmdObjects                   |
+| 展示单张表的详情信息，也就是DESCTABLE时 | 需要owner权限                                                                                                       | MyHiveAuthorization.checkPrivileges                        |
+| 建表执行前                    | 视图不做限制外，表名和字段名长度要符合外部鉴权库数据长度限制这个是在代码中写死的，所以该了鉴权库的表结构后需要改代码<br/><br/>预留了路径的校验，可以扩展路径格式等<br/><br/>不对Paimon表坐路径的校验 | MyMetaStorePreEventListener.onEvent.CREATE_TABLE           |
+| 建表成功后                    | 预留了扩展                                                                                                           | MyMetaStoreEventListener.onCreateTable                     |
+| 改表结构执行前                  | 视图不做限制外，非owner不能改表结构<br/><br/>库名不能改<br/><br/>分区表不允许改表location<br/>预留了其他不能改表限制的位置                                | MyMetaStorePreEventListener.onEvent.ALTER_TABLE            |
+| 改表结构成功后                  | 视图不做限制外，已删除的表字段权限回收(hive不允许直接删除字段，但运行调整字段顺序时缺省字段来达到删除目的)<br/><br/>预留允许的location变更之后干什么                          | MyMetaStoreEventListener.onAlterTable                      |
+| 删除表执行前                   | 检查是否是owner，不是则拒绝                                                                                                | MyMetaStorePreEventListener.onEvent.DROP_TABLE             |
+| 删除表成功后                   | 回收外部权限库中的权限信息                                                                                                   | MyMetaStoreEventListener.onDropTable                       |
+| 新增表分区执行前                 | 不操作视图和路径在元数据服务中未知的表<br/><br/>新增的分区路径不能在表路径之外                                                                    | MyMetaStorePreEventListener.onEvent.ADD_PARTITION          |
+| 新增表分区成功后                 | 预留了扩展代码                                                                                                         | MyMetaStoreEventListener.onAddPartition                    |
+| 删除表分区执行前                 | 检查是否是owner                                                                                                      | MyMetaStorePreEventListener.onEvent.DROP_PARTITION         |
+| 删除表分区成功后                 | 预留扩展代码                                                                                                          | MyMetaStoreEventListener.onDropPartition                   |
+| 更改表分区执行前                 | 阻止视图和alluxio meta的表被操作                                                                                          | MyMetaStorePreEventListener.onEvent.ALTER_PARTITION        |
+| 更改表分区成功后                 | 预留扩展代码                                                                                                          | MyMetaStoreEventListener.onAlterPartition                  |
+| 更改库信息执行前                 | 拒绝所有库信息的更改                                                                                                      | MyMetaStorePreEventListener.onEvent.ALTER_DATABASE         |
+| 建库执行前                    | 必须携带库路径                                                                                                         | MyMetaStorePreEventListener.onEvent.CREATE_DATABASE        |
+| 删库执行前                    | 拒绝所有删库操作                                                                                                        | MyMetaStorePreEventListener.onEvent.DROP_DATABASE          |
+| 创建永久函数执行前                | 拒绝创建永久函数，只能使用add语句用临时函数                                                                                         | MyMetaStorePreEventListener.onEvent.CREATE_FUNCTION        |
+| 删除永久函数执行前                | 拒绝删除已有的永久函数                                                                                                     | MyMetaStorePreEventListener.onEvent.DROP_FUNCTION          |
+| 手动生成数据库的元数据信息库前          | 禁止                                                                                                              | MyMetaStorePreEventListener.onEvent.CREATE_ISCHEMA 开始的六个操作类型 |
+| catalog操作                | 禁止                                                                                                              | MyMetaStorePreEventListener.onEvent.ALTER_CATALOG 开始的三个操作类型 |
 
-目前由于只控制到了读取权限相关操作，所以对于权限变动的操作，比如表被删除、新表是否给其他人默认权限、表字段更改
-等等，诸如此类的变化操作需要按需更改源码
+
+注意，该插件对于外部鉴权库中的数据，主要是读取，表owner相关权限并不是来自于鉴权库，而是依赖hive元数据服务中存储的owner ，不会对表owner的鉴权走外部权限数据库
+除了删表和删字段的权限回收之外，不会有写入操作，因此对于丰富的赋权场景，需要自行准备外部权限系统，将权限信息写入权限库即可
+
 
 <hr/>
 
@@ -32,16 +58,29 @@
    <value>com.wy.meta.MyMetaStorePreEventListener</value>
 </property>
 ```
-2、将下面的内容追加到hive-log4j中
+
+2、打开hive-log4j
+
+找到已有的 loggers 并在后面追加三个插件用的日志类
 ```properties
-logger.hook1.name = com.wy.auth.MyHiveAuthorizationFactory
-logger.hook1.level = INFO
-logger.hook2.name = com.wy.meta.MyMetaStoreEventListener
-logger.hook2.level = INFO
-logger.hook3.name = com.wy.meta.MyMetaStorePreEventListener
-logger.hook3.level = INFO
+#原：
+#loggers = NIOServerCnxn, ClientCnxnSocketNIO, DataNucleus, Datastore, JPOX, PerfLogger, AmazonAws, ApacheHttp
+
+#追加后：
+loggers = NIOServerCnxn, ClientCnxnSocketNIO, DataNucleus, Datastore, JPOX, PerfLogger, AmazonAws, ApacheHttp, MyHiveAuth, MyMetaStore, MyMetaPreStore
 ```
-3、在准备好的鉴权库中执行如下语句，生成权限表
+另起一行追加如下内容
+```properties
+logger.MyHiveAuth.name = com.wy.auth.MyHiveAuthorizationFactory
+logger.MyHiveAuth.level = INFO
+logger.MyMetaStore.name = com.wy.meta.MyMetaStoreEventListener
+logger.MyMetaStore.level = INFO
+logger.MyMetaPreStore.name = com.wy.meta.MyMetaStorePreEventListener
+logger.MyMetaPreStore.level = INFO
+```
+
+3、整体上采用外部鉴权数据，因此下面需要配置鉴权数据库，在并准备好的鉴权库中执行如下语句，生成权限表
+
 ```sql
 /*
  Navicat Premium Data Transfer
@@ -152,19 +191,20 @@ DELIMITER ;
 SET FOREIGN_KEY_CHECKS = 1;
 ```
 4、将权限库的连接信息，写在hive的hive-site.xml文件中
+
 ```
 <property>
     <name>hive.auth.database.url</name>
     <value>jdbc:mysql://192.168.0.110:3306/shop?useUnicode=true&amp;characterEncoding=UTF-8&amp;serverTimezone=Asia/Shanghai</value>
 </property>
 
-<-- 这里用的是mysql5.x的连接驱动，如果你用的是mysql8就需要从自己编译一下 -->
+<!-- 这里用的是mysql5.x的连接驱动，且maven依赖为provided，如果你用的是mysql8或者其他情况自己编译或者直接在hive的lib下替换 -->
 <property>
     <name>hive.auth.database.driver</name>
     <value>com.mysql.jdbc.Driver</value>
 </property>
 
-<-- 链接超时 默认5秒 -->
+<!-- 链接超时 默认5秒 -->
 <property>
     <name>hive.auth.database.timeout</name>
     <value>5000</value>

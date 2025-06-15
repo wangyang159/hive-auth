@@ -49,7 +49,7 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
                 PreCreateDatabaseEvent preCreateDatabaseEvent = (PreCreateDatabaseEvent) preEventContext;
                 location = preCreateDatabaseEvent.getDatabase().getLocationUri();
 
-                //一般情况下不会没有默认的路径，触发非法语句提交
+                //一般情况下不会没有默认的路径，除非是非法语句提交
                 if (location == null)
                     throw new MetaException("建库必须指定location(hdfs).");
 
@@ -76,7 +76,18 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
                         throw new MetaException("库信息获取失败 db:" +dbName + " table:" + tableName);
                     }
                     //此处均按照表在库下判断，所以第三个参数 isExternal 只传false
+                    //注意这里只是预留了路径的校验，不要把它set进table，那可能会导致表恒定的变成外表
                     location = String.valueOf(preCreateTableEvent.getHandler().getWh().getDefaultTablePath(db,tableName,false));
+                }
+
+                //表路径的校验，有的地方地底层路径做了统一规划，不过要跳过Paimon表
+                // getSd 表的存储描述 、getSerdeInfo系列化和反系列化内容、getSerializationLib系列化类库
+                String serializationLib = table.getSd().getSerdeInfo().getSerializationLib();
+                LOGGER.info("serializationLib:"+ serializationLib);
+                if(!table.getSd().getSerdeInfo().getSerializationLib().isEmpty()
+                        && !table.getSd().getSerdeInfo().getSerializationLib().equals("org.apache.paimon.hive.PaimonSerDe")){
+                    //不是Paimon表 才进行校验，因为Paimon实际数据不存储在传统的hdfs中
+
                 }
 
                 //3、鉴权系统中表存在索引，因此要限制表全称和字段长度
@@ -92,16 +103,6 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
                     if ( table.getPartitionKeys().get(i).getName().length() > 50 ){
                         throw new MetaException("分区字段名称不能超过50个字符 db:" +dbName + " table:" + tableName + " partition_field:"+ table.getPartitionKeys().get(i).getName());
                     }
-                }
-
-                //4、表路径的校验，有的地方地底层路径做了统一规划，不过要跳过Paimon表
-                // getSd 表的存储描述 、getSerdeInfo系列化和反系列化内容、getSerializationLib系列化类库
-                String serializationLib = table.getSd().getSerdeInfo().getSerializationLib();
-                LOGGER.info("serializationLib:"+ serializationLib);
-                if(!table.getSd().getSerdeInfo().getSerializationLib().isEmpty()
-                        && !table.getSd().getSerdeInfo().getSerializationLib().equals("org.apache.paimon.hive.PaimonSerDe")){
-                    //不是Paimon表 才进行校验，因为Paimon实际数据不存储在传统的hdfs中
-
                 }
 
                 //其他：按照你的需要还可以进行其他的校验，比如分区表要干什么，或者多引擎类型下为了数据正常识别分区字段应该是字符串类型等等
@@ -152,26 +153,27 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
 
                 //6、其他按需管控操作细节，就和元数据操作提交之后触发的监听中类似的逻辑，只不过这里偏向于权限，元数据操作之后的监听偏向于扫尾工作
 
-                //开源版本下 ALTER_TABLE 有一个特殊情况就是清空表
-
                 break;
-                /*
-                这里缺少一个清空表的类型枚举值
-                 */
             case ADD_PARTITION:
                 PreAddPartitionEvent preAddPartitionEvent = (PreAddPartitionEvent) preEventContext;
                 table = preAddPartitionEvent.getTable();
+                location = table.getSd().getLocation();
 
-                if (location == null)
-                    throw new MetaException("不能操作视图，以及未知路径的表");
+                if ( "MATERIALIZED_VIEW".equals(table.getTableType()) || "VIRTUAL_VIEW".equals(table.getTableType()))
+                    throw new MetaException("不能操作视图");
 
+                //如果携带了分区文字，则效验是否在表路径下
                 String finalLocation = table.getSd().getLocation();
                 List<Partition> partitions = preAddPartitionEvent.getPartitions();
-                for (Partition partition : partitions) {
-                    if (!partition.getSd().getLocation().startsWith(finalLocation)){
-                        throw new MetaException("分区的路径不可能改为非表路径");
+                for (int i = 0; i < partitions.size(); i++) {
+                    if (partitions.get(i).getSd() != null && partitions.get(i).getSd().getLocation() != null && !partitions.get(i).getSd().getLocation().startsWith(finalLocation)){
+                        throw new MetaException("分区的路径不能改为非表下路径");
+                    }else{
+                        //hive的语法中add语句只能指定统一的一个路径所以第一次符合规范后循环就可以结束了，后续发现特殊情况再说
+                        break;
                     }
                 }
+
                 break;
             case DROP_PARTITION :
                 PreDropPartitionEvent preDropPartitionEvent = (PreDropPartitionEvent) preEventContext;
@@ -199,9 +201,11 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
                 }
 
                 try {
+                    //preAlterPartitionEvent没有getTable方法，但是可以Handler获取
                     table = preAlterPartitionEvent.getHandler().get_table(dbName, tableName);
-                    if (table.getSd().getLocation() == null)
+                    if (table.getSd().getLocation() == null || "MATERIALIZED_VIEW".equals(table.getTableType()) || "VIRTUAL_VIEW".equals(table.getTableType()))
                         throw new MetaException("不能操作视图，以及未知路径的表");
+
                 } catch (TException e) {
                     throw new RuntimeException(e.getMessage());
                 }

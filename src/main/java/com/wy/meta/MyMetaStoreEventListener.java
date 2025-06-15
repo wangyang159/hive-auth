@@ -4,6 +4,7 @@ import com.wy.utils.FieldDiff;
 import com.wy.utils.MysqlUtil;
 import com.wy.utils.UserUtil;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.metastore.HiveMetaException;
 import org.apache.hadoop.hive.metastore.MetaStoreEventListener;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -124,6 +125,9 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         } catch (SQLException e) {
             e.printStackTrace();
             throw new MetaException("清理表权限信息出现异常");
+        } finally {
+            mysqlUtil.closeConnection(connection);
+            mysqlUtil.closePool();
         }
     }
 
@@ -140,8 +144,6 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         //视图不需要做操作
         if ("MATERIALIZED_VIEW".equals(tableType) || "VIRTUAL_VIEW".equals(tableType))
             return;
-
-        Table newtable = tableEvent.getNewTable();
 
         //获取用户身份
         String userName = UserUtil.getUserName();
@@ -161,12 +163,42 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         }
 
         List<FieldSchema> deletedFields = fieldDiff.deletedFields;
-        //对于判定为删除的字段，要做什么操作，通常是删除权限记录
+        //对于判定为删除的字段，要做什么操作，通常是回收所以字段已经失效的权限数据
         if (deletedFields != null && !deletedFields.isEmpty() && deletedFields.size()!=0) {
             LOGGER.info("删除字段 {}",deletedFields);
+            MysqlUtil mysqlUtil = new MysqlUtil(1, 0);
+            Connection connection = null;
+            try {
+                connection = mysqlUtil.getConnection();
+
+                StringBuilder sql = new StringBuilder();
+                sql.append("delete from db_tb_auth where db_tb_id in ")
+                        .append("(select db_tb_id from db_tb_info where db_tb_name='")
+                        .append(oldtable.getDbName()).append(".").append(oldtable.getTableName())
+                        .append("') and field in (");
+                //遍历需要删除的字段
+                for (int i = 0; i < deletedFields.size(); i++) {
+                    sql.append("'").append(deletedFields.get(i).getName()).append("',");
+                }
+                sql.delete(sql.length()-1,sql.length());
+                sql.append(")");
+
+                int delete_auth = connection.prepareStatement(sql.toString()).executeUpdate();
+
+                if ( delete_auth != 0 ){
+                    LOGGER.info("回收字段权限个数: {}",delete_auth);
+                }
+            } catch (SQLException e) {
+                e.printStackTrace();
+                throw new MetaException("回收删除字段权限出现异常");
+            } finally {
+                mysqlUtil.closeConnection(connection);
+                mysqlUtil.closePool();
+            }
         }
 
         //如果表存储位置发生改变，要做什么操作
+        Table newtable = tableEvent.getNewTable();
         String oldtable_location = oldtable.getSd().getLocation();
         String newtable_location = newtable.getSd().getLocation();
         if ( ! oldtable_location.equals(newtable_location) ) {
@@ -176,6 +208,11 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
 
     @Override
     public void onAddPartition(AddPartitionEvent partitionEvent) throws MetaException {
+        //如果本次事件不成功，就什么都不干
+        if (!partitionEvent.getStatus()){
+            return;
+        }
+
         try {
             Table table = partitionEvent.getTable();
             Iterator<Partition> partitionIterator = partitionEvent.getPartitionIterator();
@@ -183,12 +220,17 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
                 LOGGER.info("新增分区 {}.{} {}",table.getDbName(),table.getTableName(),partitionIterator.next().getValues());
             }
         }catch (Exception e){
-            LOGGER.error("error",e);
+            throw new MetaException("新增分区扫尾工作出现异常");
         }
     }
 
     @Override
     public void onDropPartition(DropPartitionEvent partitionEvent) throws MetaException {
+        //如果本次事件不成功，就什么都不干
+        if (!partitionEvent.getStatus()){
+            return;
+        }
+
         try {
             Table table = partitionEvent.getTable();
             Iterator<Partition> partitionIterator = partitionEvent.getPartitionIterator();
@@ -196,12 +238,17 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
                 LOGGER.info("删除分区 {}.{} {}",table.getDbName(),table.getTableName(),partitionIterator.next().getValues());
             }
         }catch (Exception e){
-            LOGGER.error("error",e);
+            throw new MetaException("删除分区扫尾工作出现异常");
         }
     }
 
     @Override
     public void onAlterPartition(AlterPartitionEvent partitionEvent) throws MetaException {
+        //如果本次事件不成功，就什么都不干
+        if (!partitionEvent.getStatus()){
+            return;
+        }
+
         Table table = partitionEvent.getTable();
         Partition newPartition = partitionEvent.getNewPartition();
         Partition oldPartition = partitionEvent.getOldPartition();
