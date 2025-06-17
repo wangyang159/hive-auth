@@ -9,11 +9,11 @@
 | 展示表或库资源列表                | 并没有做特别过滤，目前是hive返回什么就展示什么                                                                                       | MyHiveAuthorization.filterListCmdObjects                   |
 | 展示单张表的详情信息，也就是DESCTABLE时 | 需要owner权限                                                                                                       | MyHiveAuthorization.checkPrivileges                        |
 | 建表执行前                    | 视图不做限制外，表名和字段名长度要符合外部鉴权库数据长度限制这个是在代码中写死的，所以该了鉴权库的表结构后需要改代码<br/><br/>预留了路径的校验，可以扩展路径格式等<br/><br/>不对Paimon表坐路径的校验 | MyMetaStorePreEventListener.onEvent.CREATE_TABLE           |
-| 建表成功后                    | 预留了扩展                                                                                                           | MyMetaStoreEventListener.onCreateTable                     |
+| 建表成功后                    | 将表信息写入鉴权库<br/><br/>预留了扩展                                                                                        | MyMetaStoreEventListener.onCreateTable                     |
 | 改表结构执行前                  | 视图不做限制外，非owner不能改表结构<br/><br/>库名不能改<br/><br/>分区表不允许改表location<br/>预留了其他不能改表限制的位置                                | MyMetaStorePreEventListener.onEvent.ALTER_TABLE            |
 | 改表结构成功后                  | 视图不做限制外，已删除的表字段权限回收(hive不允许直接删除字段，但运行调整字段顺序时缺省字段来达到删除目的)<br/><br/>预留允许的location变更之后干什么                          | MyMetaStoreEventListener.onAlterTable                      |
 | 删除表执行前                   | 检查是否是owner，不是则拒绝                                                                                                | MyMetaStorePreEventListener.onEvent.DROP_TABLE             |
-| 删除表成功后                   | 回收外部权限库中的权限信息                                                                                                   | MyMetaStoreEventListener.onDropTable                       |
+| 删除表成功后                   | 回收外部权限库中的该表所有的权限信息                                                                                              | MyMetaStoreEventListener.onDropTable                       |
 | 新增表分区执行前                 | 不操作视图和路径在元数据服务中未知的表<br/><br/>新增的分区路径不能在表路径之外                                                                    | MyMetaStorePreEventListener.onEvent.ADD_PARTITION          |
 | 新增表分区成功后                 | 预留了扩展代码                                                                                                         | MyMetaStoreEventListener.onAddPartition                    |
 | 删除表分区执行前                 | 检查是否是owner                                                                                                      | MyMetaStorePreEventListener.onEvent.DROP_PARTITION         |
@@ -29,8 +29,8 @@
 | catalog操作                | 禁止                                                                                                              | MyMetaStorePreEventListener.onEvent.ALTER_CATALOG 开始的三个操作类型 |
 
 
-注意，该插件对于外部鉴权库中的数据，主要是读取，表owner相关权限并不是来自于鉴权库，而是依赖hive元数据服务中存储的owner ，不会对表owner的鉴权走外部权限数据库
-除了删表和删字段的权限回收之外，不会有写入操作，因此对于丰富的赋权场景，需要自行准备外部权限系统，将权限信息写入权限库即可
+注意，该插件对于外部鉴权库中的数据，主要是读取，表owner相关权限并不是来自于鉴权库，而是依赖hive元数据服务中存储的owner ，因此不会对表owner的鉴权走外部权限数据库
+除了删表和删字段的权限回收，以及建表后的表信息写入之外，不会有写入操作，因此对于丰富的赋权场景，需要自行准备外部权限系统，将权限信息写入权限库即可
 
 
 <hr/>
@@ -43,9 +43,9 @@ git clone https://github.com/wangyang159/hive-auth.git
 cd hive-auth
 mvn -DskipTests=true clean package
 ```
-结果hivePlu.jar，会出现在target目录下，将它放入hive的lib目录中
+结果hive-auth*.jar，会出现在target目录下，将它放入hive的lib目录中
 
-2、将下面的内容存在就修改到hive-site.xml中
+2、将下面的内容存在就修改，否则直接添加到hive-site.xml中
 
 ```
 <!-- 受保护参数，不同的hive版本默认值不一样，下面这一长串3.1.3以下都不需要改 -->
@@ -77,7 +77,7 @@ mvn -DskipTests=true clean package
 
 3、打开hive-log4j
 
-找到已有的 loggers 并在后面追加三个插件用的日志类，后期在日志调试上，查看hive-log4j日志配置设置的目录，以及极少量的启动进程也会有日志，比如插件中类的调起
+找到已有的 loggers 并在后面追加三个插件用的日志类，后期在日志调试上，主要查看hive-log4j日志配置设置的目录，极少量的启动进程也会有日志，比如插件中类的调起，非常少需要的时候留意一下就行
 
 ```properties
 #原：
@@ -99,7 +99,7 @@ logger.MyMetaPreStore.name = com.wy.meta.MyMetaStorePreEventListener
 logger.MyMetaPreStore.level = INFO
 ```
 
-4、整体上采用外部鉴权数据，因此下面需要配置鉴权数据库，在并准备好的鉴权库中执行如下语句，生成权限表
+4、整体上采用外部鉴权数据，因此下面需要配置鉴权数据库，并在准备好的鉴权库中执行如下语句，生成鉴权数据相关表
 
 注意：需要至少 MySQL 5.5.3+ 的数据库
 
@@ -215,7 +215,7 @@ END ;;
 delimiter ;
 
 -- ----------------------------
--- 权限回收时用到的存储过程
+-- 建表后表信息写入的存储过程
 -- ----------------------------
 DROP PROCEDURE IF EXISTS `InsertTableInfo`;
 DELIMITER ;;
