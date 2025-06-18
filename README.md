@@ -151,10 +151,13 @@ CREATE TABLE `db_tb_auth`  (
 DROP TABLE IF EXISTS `db_tb_info`;
 CREATE TABLE `db_tb_info`  (
                                `db_tb_id` int(4) NOT NULL AUTO_INCREMENT COMMENT '表信息id',
+                               `user_id` int(4) NULL DEFAULT NULL COMMENT 'owner-id',
                                `db_tb_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '库名_表名',
                                PRIMARY KEY (`db_tb_id`) USING BTREE,
-                               UNIQUE INDEX `表名称索引`(`db_tb_name`) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 5 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+                               UNIQUE INDEX `表名称索引`(`db_tb_name`) USING BTREE,
+                               INDEX `表的owner`(`user_id`) USING BTREE,
+                               CONSTRAINT `表的owner` FOREIGN KEY (`user_id`) REFERENCES `user_info` (`user_id`) ON DELETE RESTRICT ON UPDATE RESTRICT
+) ENGINE = InnoDB AUTO_INCREMENT = 7 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- 用户信息表
@@ -168,7 +171,7 @@ CREATE TABLE `user_info`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 3 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- 权限回收时用到的存储过程
+-- 删表权限回收时用到的存储过程
 -- ----------------------------
 DROP PROCEDURE IF EXISTS `DeleteTableAndAuth`;
 delimiter ;;
@@ -235,6 +238,7 @@ BEGIN
 
     -- 2. 用户不存在时返回-1
     IF v_user_id IS NULL THEN
+        INSERT INTO db_tb_info (db_tb_name) VALUES (in_db_tb_name);
         SELECT -1 AS result;
     ELSE
         -- 3. 存在插入数据表信息

@@ -127,7 +127,7 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
             resultSet.next();
             if (resultSet.getInt("result") == -1){
                 LOGGER.info("鉴权库缺失用户数据，需联系引擎管理添加，但这不影响表的创建，只是鉴权数据owner为空 - 录入表: {} - 确实owner: {}",dbName+"."+tableName,owner);
-                throw new MetaException("鉴权库确实用户数据，需联系引擎管理添加，但这不影响表的创建，只是鉴权数据owner确实 - 录入表: "+dbName+"."+tableName+" - 确实owner: "+owner);
+                throw new MetaException("鉴权库缺失用户数据，需联系引擎管理添加，但这不影响表的创建，只是鉴权数据中owner为空 - 录入表: "+dbName+"."+tableName+" - 确实owner: "+owner);
             } else {
                 LOGGER.info("表信息录入 表:{} owner:{}",dbName+"."+tableName,owner);
             }
@@ -214,6 +214,50 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         LOGGER.info("|用户是       ： " + userName);
         LOGGER.info("---------------------");
 
+        /*
+         这里留一个关键注释：
+          FieldDiff 类中预留有4组可区分的字段操作类型，按照需要自己更改生成逻辑即可
+          在这里只做了最基本的，对删除字段权限回收
+          在业内多数情况下会有很多丰富的权限需求，对于表结构的更改来讲
+          就像元数据变动前置类中注释写的那样，普遍会有某些情况表是不允许改变的，当然这种情况下会在前置类中拦截
+          而这里要说的是，对于外部鉴权系统普遍会有另行收集表结构的需求
+          就如上面建表时写入最基本的表名和owner那样
+          虽然这些数据在hive元数据库中都有，但是为了可扩展性，以及hive元数据库自身的安全以及稳定来讲
+          基本不可能让其他自定义的功能直接访问hive元数据服务的库去，因此这就看具体使用时方案怎么决定了
+
+          至于hive元数据服务的mysql中，如果真的需要获取，表相关的信息储存在下面的表中
+          DBS：存放了库信息
+              关键字段：DB_ID 库的唯一id
+                      DB_LOCATION_URI 库的默认储存地址
+                      NAME 库名
+                      DESC 库的说明
+
+          TBLS：存放了表信息
+               关键字段：TBL_ID 表的唯一id
+                       DB_ID 库的唯一id
+                       SD_ID  表描述符id ， 也就是表存储类型、数据分隔符那些
+                       OWNER 表owner的名称
+                       TBL_NAME 表名
+                       TBL_TYPE 表类型 - MANAGED_TABLE(内), EXTERNAL_TABLE(外)
+
+           COLUMNS_V2：存放了表的列信息，0.14之前的hive在COLUMNS里面
+                关键字段：CD_ID 列数据的所属id，这个字段使用时注意它本身是 CDS 表的外键，同一个表的该字段数据是重复的，而 CDS表 只有一列，存储的是表信息的ID
+                        COMMENT 列描述
+                        COLUMN_NAME 列名
+                        TYPE_NAME 类型
+                        INTEGER_IDX 字段在表中的顺序，从0开始，这个顺序在深度开发hive插件时相当重要
+
+           SDS：存放了表描述符信息
+                关键字段：SD_ID 描述符id
+                        CD_ID 表信息id
+                        INPUT_FORMAT  输入格式，比如org.apache.hadoop.mapred.TextInputFormat
+                        OUTPUT_FORMAT 输出格式
+                        LOCATION 表存放位置
+                        IS_COMPRESSED 是否启用压缩， 0 启用
+                        IS_STOREDASSUBDIR  是否按子目录储存，0 是，一般都是 0
+                        NUM_BUCKETS 若为分桶表则这里表示数量，如果不是则默认 -1
+                        SERDE_ID  系列化类型的id 是 SERDES表的外键，但是SERDES表除了系列化类名称之外其他一般都是空的
+         */
         FieldDiff fieldDiff = new FieldDiff(tableEvent);
 
         List<FieldSchema> addedFields = fieldDiff.addedFields;
@@ -226,7 +270,7 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         //对于判定为删除的字段，要做什么操作，通常是回收所以字段已经失效的权限数据
         if (deletedFields != null && !deletedFields.isEmpty() && deletedFields.size()!=0) {
             LOGGER.info("删除字段 {}",deletedFields);
-            MysqlUtil mysqlUtil = new MysqlUtil(url,driver,timeout,username,password,2,1,hp_id_timeout,hp_lefttime);
+            MysqlUtil mysqlUtil = new MysqlUtil(url,driver,timeout,username,password,1,0,hp_id_timeout,hp_lefttime);
             Connection connection = null;
             try {
                 connection = mysqlUtil.getConnection();
@@ -264,6 +308,8 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         if ( ! oldtable_location.equals(newtable_location) ) {
             LOGGER.info("存储地址变更 {} -> {} ", oldtable_location, newtable_location);
         }
+
+        //等等。。其他的情况
     }
 
     @Override
