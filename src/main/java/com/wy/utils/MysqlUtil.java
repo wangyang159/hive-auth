@@ -79,13 +79,4 @@ public class MysqlUtil {
         conns.clear();
     }
 
-    /**
-     * 关闭连接池
-     */
-    public void closePool(){
-        if ( !dataSource.isClosed() ){
-            dataSource.close();
-        }
-    }
-
 }

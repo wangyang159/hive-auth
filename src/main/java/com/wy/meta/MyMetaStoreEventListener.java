@@ -1,5 +1,6 @@
 package com.wy.meta;
 
+import com.wy.exception.HiveMetaStoreException;
 import com.wy.utils.FieldDiff;
 import com.wy.utils.MysqlUtil;
 import com.wy.utils.UserUtil;
@@ -10,6 +11,7 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.events.*;
+import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveAuthzPluginException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,19 +34,21 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MyMetaStoreEventListener.class);
 
-    //调用鉴权数据库的参数
-    private final String url;
-    private final String driver;
-    private final Long timeout;
-    private final String username;
-    private final String password;
-    private final int hp_maxsize;
-    private final int hp_minidle;
-    private final long hp_id_timeout;
-    private final long hp_lefttime;
+    private MysqlUtil mysqlUtil;
 
-    public MyMetaStoreEventListener(Configuration config) {
+    public MyMetaStoreEventListener(Configuration config) throws HiveMetaStoreException {
         super(config);
+
+        //初始化来连接池和线程池的配置参数
+        String url;
+        String driver;
+        Long timeout;
+        String username;
+        String password;
+        int hp_maxsize;
+        int hp_minidle;
+        long hp_id_timeout;
+        long hp_lefttime;
 
         //初始化鉴权库的连接池
         url = config.get("hive.auth.database.url");
@@ -52,25 +56,42 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         username = config.get("hive.auth.database.username");
         password = config.get("hive.auth.database.password");
 
-        //链接超时
+        //数据库连接超时时间
         BigInteger timeout_bi = new BigInteger(config.get("hive.auth.database.timeout"));
+        if ( timeout_bi.compareTo(BigInteger.valueOf(0)) < 0 || timeout_bi.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0   ){
+            throw new HiveMetaStoreException("鉴权连接池连接超时时间超过预期Long值");
+        }
         timeout = timeout_bi.longValue();
 
         //数据库连接池大小校验
-        BigInteger hp_maxsize_bi = new BigInteger(config.get("hive.auth.database.hikari.pool.maxsize"));
+        BigInteger hp_maxsize_bi = new BigInteger(config.get("hive.auth.database.meta.listener.hikari.pool.maxsize"));
+        if ( hp_maxsize_bi.compareTo(BigInteger.valueOf(0)) < 0 || hp_maxsize_bi.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0 ){
+            throw new HiveMetaStoreException("鉴权连接池大小超过预期Int值");
+        }
         hp_maxsize = hp_maxsize_bi.intValue();
 
         //数据库连接池空闲连接大小校验
         BigInteger hp_minidle_bi = new BigInteger(config.get("hive.auth.database.hikari.pool.minidle"));
+        if ( hp_minidle_bi.compareTo(BigInteger.valueOf(0)) < 0 || hp_minidle_bi.compareTo(BigInteger.valueOf( hp_maxsize_bi.intValue() / 2 )) > 0   ){
+            throw new HiveMetaStoreException("鉴权连接池空闲连接大小超过预期Int值");
+        }
         hp_minidle = hp_minidle_bi.intValue();
 
         //数据库连接池空闲超时校验
         BigInteger hp_id_timeout_bi = new BigInteger(config.get("hive.auth.database.hikari.pool.idle.timeout"));
+        if ( hp_id_timeout_bi.compareTo(BigInteger.valueOf(0)) < 0 || hp_id_timeout_bi.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0  ){
+            throw new HiveMetaStoreException("鉴权连接池空闲超时时间超过预期Long值");
+        }
         hp_id_timeout = hp_id_timeout_bi.longValue();
 
         //数据库连接池连接最大存活时间校验
         BigInteger hp_lefttime_bi = new BigInteger(config.get("hive.auth.database.hikari.pool.max.lifetime"));
+        if (  hp_lefttime_bi.compareTo(hp_id_timeout_bi) < 0 || hp_lefttime_bi.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0 ) {
+            throw new HiveMetaStoreException("鉴权连接池连接存在时间超过预期Long值");
+        }
         hp_lefttime = hp_lefttime_bi.longValue();
+
+        mysqlUtil = new MysqlUtil(url,driver,timeout,username,password,hp_maxsize,hp_minidle,hp_id_timeout,hp_lefttime);
 
         System.out.println("Hive MetaStore Plugin Initialized! 元数据监控组件接入! ");
     }
@@ -115,7 +136,6 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         这里将表面写入鉴权库
          */
         //将外部权限库中的表、字段全系数据删除
-        MysqlUtil mysqlUtil = new MysqlUtil(url,driver,timeout,username,password,1,0,hp_id_timeout,hp_lefttime);
         Connection connection=null;
         StringBuilder sql = new StringBuilder();
         try {
@@ -126,16 +146,15 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
             ResultSet resultSet = callableStatement.executeQuery();
             resultSet.next();
             if (resultSet.getInt("result") == -1){
-                LOGGER.info("鉴权库缺失用户数据，需联系引擎管理添加，但这不影响表的创建，只是鉴权数据owner为空 - 录入表: {} - 确实owner: {}",dbName+"."+tableName,owner);
-                throw new MetaException("鉴权库缺失用户数据，需联系引擎管理添加，但这不影响表的创建，只是鉴权数据中owner为空 - 录入表: "+dbName+"."+tableName+" - 确实owner: "+owner);
+                LOGGER.info("鉴权库缺失用户数据，需联系引擎管理添加，但这不影响表的创建，只是鉴权数据owner为空 - 录入表: {} - 缺失owner: {}",dbName+"."+tableName,owner);
+                throw new MetaException("鉴权库缺失用户数据，需联系引擎管理添加，但这不影响表的创建，只是鉴权数据中owner为空 - 录入表: "+dbName+"."+tableName+" - 缺失owner: "+owner);
             } else {
                 LOGGER.info("表信息录入 表:{} owner:{}",dbName+"."+tableName,owner);
             }
         } catch (SQLException e) {
-            throw new RuntimeException("清理表权限信息出现异常 - "+e.getMessage());
+            throw new MetaException("清理表权限信息出现异常 - "+e.getMessage());
         } finally {
             mysqlUtil.closeConnection(connection);
-            mysqlUtil.closePool();
         }
     }
 
@@ -168,7 +187,6 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         LOGGER.info("---------------------");
 
         //将外部权限库中的表、字段全系数据删除
-        MysqlUtil mysqlUtil = new MysqlUtil(url,driver,timeout,username,password,1,0,hp_id_timeout,hp_lefttime);
         Connection connection=null;
         StringBuilder sql = new StringBuilder();
         try {
@@ -184,10 +202,9 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
                 LOGGER.info("未发现可回收权限 表:{}",dbName+"."+tableName);
             }
         } catch (SQLException e) {
-            throw new RuntimeException("清理表权限信息出现异常 - "+e.getMessage());
+            throw new MetaException("清理表权限信息出现异常 - "+e.getMessage());
         } finally {
             mysqlUtil.closeConnection(connection);
-            mysqlUtil.closePool();
         }
     }
 
@@ -270,7 +287,6 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         //对于判定为删除的字段，要做什么操作，通常是回收所以字段已经失效的权限数据
         if (deletedFields != null && !deletedFields.isEmpty() && deletedFields.size()!=0) {
             LOGGER.info("删除字段 {}",deletedFields);
-            MysqlUtil mysqlUtil = new MysqlUtil(url,driver,timeout,username,password,1,0,hp_id_timeout,hp_lefttime);
             Connection connection = null;
             try {
                 connection = mysqlUtil.getConnection();
@@ -294,10 +310,9 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
                 }
             } catch (SQLException e) {
                 e.printStackTrace();
-                throw new MetaException("回收删除字段权限出现异常");
+                throw new MetaException("回收删除字段权限出现异常"+e.getMessage());
             } finally {
                 mysqlUtil.closeConnection(connection);
-                mysqlUtil.closePool();
             }
         }
 
@@ -326,7 +341,7 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
                 LOGGER.info("新增分区 {}.{} {}",table.getDbName(),table.getTableName(),partitionIterator.next().getValues());
             }
         }catch (Exception e){
-            throw new MetaException("新增分区扫尾工作出现异常");
+            throw new MetaException("新增分区扫尾工作出现异常"+e.getMessage());
         }
     }
 
@@ -344,7 +359,7 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
                 LOGGER.info("删除分区 {}.{} {}",table.getDbName(),table.getTableName(),partitionIterator.next().getValues());
             }
         }catch (Exception e){
-            throw new MetaException("删除分区扫尾工作出现异常");
+            throw new MetaException("删除分区扫尾工作出现异常"+e.getMessage());
         }
     }
 
@@ -360,6 +375,5 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         Partition oldPartition = partitionEvent.getOldPartition();
         LOGGER.info("修改分区 {}.{} {} -> {}",table.getDbName(),table.getTableName(),oldPartition.getValues(),newPartition.getValues());
     }
-
 
 }

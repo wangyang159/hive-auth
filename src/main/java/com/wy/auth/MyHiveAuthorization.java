@@ -26,6 +26,7 @@ import java.util.concurrent.Executors;
  * 用来对用户sql所操作的关联主体做鉴权操作
  *
  * 一定要注意，对于开源版本下的hive来讲，对hdfs路径的权限检查，会先当前鉴权插件触发
+ * 所以在使用是会发现提交一个任务，如果涉及写那么是任务生成相关的日志先出现
  */
 public class MyHiveAuthorization implements HiveAuthorizer {
     //Log日志类
@@ -97,7 +98,7 @@ public class MyHiveAuthorization implements HiveAuthorizer {
         timeout = timeout_bi.longValue();
 
         //数据库连接池大小校验
-        BigInteger hp_maxsize_bi = new BigInteger(hiveConf.get("hive.auth.database.hikari.pool.maxsize"));
+        BigInteger hp_maxsize_bi = new BigInteger(hiveConf.get("hive.auth.database.authorizer.hikari.pool.maxsize"));
         if ( hp_maxsize_bi.compareTo(BigInteger.valueOf(0)) < 0 || hp_maxsize_bi.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0 ){
             throw new HiveAuthzPluginException("鉴权连接池大小超过预期Int值");
         }
@@ -138,12 +139,8 @@ public class MyHiveAuthorization implements HiveAuthorizer {
         System.out.println("Hive Authz Plugin Initialized! 鉴权组件接入! ");
     }
 
-
-
     /**
      * 鉴权时被调用的方法
-     *
-     * 注意！！鉴权方法生效于计算任务开始之前！只有过了鉴权MR任务才开始被生成
      *
      * @param hiveOpType 当前操作的类型，是一个枚举类，注意当方法被调用时，该对象标识的时截至当前任务阶段的当前操作实在干什么
      *                   比如 insert 操作，鉴权时该对象只是查询，至于要对上下游干什么，上下游是谁，要分别通过下面两个对象去判断
@@ -191,7 +188,7 @@ public class MyHiveAuthorization implements HiveAuthorizer {
                         table = metastoreClient.getTable(dbName, tblName);
 
                         if ( !table.getOwner().equals(hiveAuthProvider.getUserName()) ){
-                            throw new HiveAuthzPluginException("字段鉴权 - 只有表owner才可以写表");
+                            throw new HiveAuthzPluginException("字段鉴权 - 当前用户:"+hiveAuthProvider.getUserName()+"非owner，目标owner:"+table.getOwner());
                         }
 
                         //如果写权限要放在外部就要鉴权，需要自己改造一下

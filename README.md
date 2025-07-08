@@ -286,13 +286,23 @@ SET FOREIGN_KEY_CHECKS = 1;
 <!-- 
 设置鉴权任务并行上限 默认 10 ，不可超过无符号Int范围
 按照每个hive会话内的一次sql运行来决定个数就行
-因为鉴权类的生命周期就是一个会话提交第一个sql开始到连接断开
-而操作数据的鉴权流程是每一个select-sql执行都会有一个线程池和连接池并行鉴权
-这个版本元数据鉴权复用了这里的操作数据鉴权池的大小，后面版本会拆分
+鉴权类的生命周期就是一个会话提交第一个sql开始到连接断开
+而操作数据的鉴权流程是这个会话内，每一个select-sql执行都会有一个持有存在的线程池和连接池并行鉴权
+会话内的任务是依次执行的，用户不可能一个会话同时运行两个任务，所以按照一次sql任务的运行来决定个数就行
 -->
 <property>
-    <name>hive.auth.database.hikari.pool.maxsize</name>
+    <name>hive.auth.database.authorizer.hikari.pool.maxsize</name>
     <value>10</value>
+</property>
+
+<!--
+MetaStoreEventListener 元数据权限监控组件运行在服务端的meta进程中
+且内部同样采用持久化的线程池与鉴权库交互，因此作为服务级别的线程池大的个数要大一些
+默认100
+-->
+<property>
+    <name>hive.auth.database.meta.listener.hikari.pool.maxsize</name>
+    <value>100</value>
 </property>
 
 <!-- 
