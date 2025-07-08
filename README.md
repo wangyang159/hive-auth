@@ -284,10 +284,11 @@ SET FOREIGN_KEY_CHECKS = 1;
 </property>
 
 <!-- 
-设置鉴权任务并行上限 默认 10 ，不可超过无符号Int范围，按照每个hive会话内的一次sql运行来决定就行
+设置鉴权任务并行上限 默认 10 ，不可超过无符号Int范围
+按照每个hive会话内的一次sql运行来决定个数就行
 因为鉴权类的生命周期就是一个会话提交第一个sql开始到连接断开
-而鉴权流程是每一个select-sql执行都会有一个线程池和连接池并行鉴权
-鉴权任务触发时，会在鉴权表数 和 该上限 两者中取一个最小值
+而操作数据的鉴权流程是每一个select-sql执行都会有一个线程池和连接池并行鉴权
+这个版本元数据鉴权复用了这里的操作数据鉴权池的大小，后面版本会拆分
 -->
 <property>
     <name>hive.auth.database.hikari.pool.maxsize</name>
@@ -296,8 +297,7 @@ SET FOREIGN_KEY_CHECKS = 1;
 
 <!-- 
 设置最小空闲连接数 默认 2 ，不可超过总大小的一半 向下取整 
-但程序中并没有直接使用，只是做为后期扩展用到的一个默认值
-不过任然会校验数据合法
+后期下面的所有参数，元数据鉴权池都会复用
 -->
 <property>
     <name>hive.auth.database.hikari.pool.minidle</name>

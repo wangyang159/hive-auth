@@ -23,33 +23,28 @@ import java.util.concurrent.Executors;
 /**
  * hive 鉴权类
  * 这个类在 一个新的客户端或者hiveserver2连接后，提交第一个sql时 由工厂模式实例化，后面只要不断开连接会自动复用
- * 用来对用户的sql所操作的关联主体做鉴权操作
+ * 用来对用户sql所操作的关联主体做鉴权操作
+ *
+ * 一定要注意，对于开源版本下的hive来讲，对hdfs路径的权限检查，会先当前鉴权插件触发
  */
 public class MyHiveAuthorization implements HiveAuthorizer {
     //Log日志类
     public static final Log LOG = LogFactory.getLog(MyHiveAuthorization.class);
 
-    //存储鉴权用到的元数据服务客户端生成对象、hive配置、用户身份
+    //存储鉴权用到的元数据服务客户端生成对象、hive配置、用户身份、上下文对象(基本不用) ，这几个对象由Hive实例化该类时传入
     private final HiveMetastoreClientFactory metastoreClientFactory;
     private final HiveConf hiveConf;
     private final HiveAuthenticationProvider hiveAuthProvider;
     private final HiveAuthzSessionContext hiveAuthzSessionContext;
 
-    //留给创建鉴权库连接池的参数
-    private final String url;
-    private final String driver;
-    private final Long timeout;
-    private final String username;
-    private final String password;
-    private final int hp_maxsize;
-    private final int hp_minidle;
-    private final long hp_id_timeout;
-    private final long hp_lefttime;
+    // MyHiveAuthorization 类中公用一个持久化的任务并行线程池和数据库连接池
+    private ExecutorService executor;
+    private MysqlUtil mysqlUtil;
 
     /*
     准备一个自定义的全字段标识，按需来就行，但是这里后面没有具体使用
     只是留给写入权限也包含在外部系统的场景改造用的
-    这里一来嫌麻烦，二来业内通常写入权限只给owner
+    只是这里一来嫌麻烦，二来业内通常写入权限只给owner
     所以用hive元数据中的owner做判断了
      */
     private static final String INSERT_VALUE_TAG = "-";
@@ -66,27 +61,35 @@ public class MyHiveAuthorization implements HiveAuthorizer {
                                HiveConf conf, HiveAuthenticationProvider authenticator,
                                HiveAuthzSessionContext ctx) throws HiveAuthzPluginException {
 
+        //四个hive传入的参数
         this.metastoreClientFactory = metastoreClientFactory;
         this.hiveConf = conf;
         this.hiveAuthProvider = authenticator;
         this.hiveAuthzSessionContext = ctx;
 
+        //初始化来连接池和线程池的配置参数
+        String url;
+        String driver;
+        Long timeout;
+        String username;
+        String password;
+        int hp_maxsize;
+        int hp_minidle;
+        long hp_id_timeout;
+        long hp_lefttime;
+
         /*
         初始化鉴权库的连接池参数
 
-        此外，这里留一个关键注释：后面用到鉴权库连接池的地方，都会额外读取一遍配置
-        因为写成在统一的MysqlUtil中会导致有的后面触发的元数据安全类拿不到这些配置从而变成了Null
-        所以干脆获取值就各各写个的了
-
-        不过，对于数值类型的配置，只在这里做校验后面使用的类，直接获取到就转换了，不再做重复校验
-        因为 MyHiveAuthorization 类会相较于另外两个在执行时往往优先被吊起
+        此外，这里留一个关键注释：后面用到鉴权库连接池的地方，都会额外读取一遍配置，按情况而定是否校验数据
+        因为虽然写在了统一的MysqlUtil中，但是由于不同的类它们实例话并不再一个Java虚拟机进程里面
          */
         url = hiveConf.get("hive.auth.database.url");
         driver = hiveConf.get("hive.auth.database.driver");
         username = hiveConf.get("hive.auth.database.username");
         password = hiveConf.get("hive.auth.database.password");
 
-        //链接超时
+        //数据库连接超时时间
         BigInteger timeout_bi = new BigInteger(hiveConf.get("hive.auth.database.timeout"));
         if ( timeout_bi.compareTo(BigInteger.valueOf(0)) < 0 || timeout_bi.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0   ){
             throw new HiveAuthzPluginException("鉴权连接池连接超时时间超过预期Long值");
@@ -121,9 +124,21 @@ public class MyHiveAuthorization implements HiveAuthorizer {
         }
         hp_lefttime = hp_lefttime_bi.longValue();
 
-        //这里用System输出，而不用日志类，是因为该类会被工厂模式实例化构建时日志类还没有生效
+        /*
+         创建定长线程池 , 线程池长度  与 数据库连接池的大小 保持一致，这样每个任务都能那个一个连接
+         这里留一个关键注释：
+            MyHiveAuthorization 这个类会在会用连接hive后执行第一个sql时被初始化，生命周期就是当前会话的开始到结束
+            一个会话实例化一个，因此使用持久化在类属性中的线程池和连接池。
+            当然这个插件最开始的时候采用了任务级别的池对象，但是在后面的使用中发现开启一个交互式会话鉴权会有点慢，所以改写法了
+         */
+        executor = Executors.newFixedThreadPool(hp_maxsize);
+        mysqlUtil = new MysqlUtil(url,driver,timeout,username,password,hp_maxsize,hp_minidle,hp_id_timeout,hp_lefttime);
+
+        //这里用System输出，而不用日志类，是因为该类被工厂模式实例化构建时日志类还没有生效
         System.out.println("Hive Authz Plugin Initialized! 鉴权组件接入! ");
     }
+
+
 
     /**
      * 鉴权时被调用的方法
@@ -147,76 +162,54 @@ public class MyHiveAuthorization implements HiveAuthorizer {
         IMetaStoreClient metastoreClient = null;
         Table table = null;
 
-        //对 查询集 和 结果集建表 做的鉴权操作
+        //对 查询集 和 结果集建表 做鉴权操作
         if (hiveOpType == HiveOperationType.QUERY || hiveOpType == HiveOperationType.CREATETABLE_AS_SELECT) {
-            //后面要鉴权的字段集合
+            //后面要鉴权的字段集合 key为 库.表 ，value为字段名集合
             Map<String, List<String>> checkPrivilegeObject = new HashMap<>();
             //获取一个元数据连接
             metastoreClient = metastoreClientFactory.getHiveMetastoreClient();
 
-            /*
-            当操作是 SQL类型是查询，且此时操作涉及的上、下游对象不为空
-            同时对下游对象要做的操作是插入数据，则获取下游表的信息，此时下游表其实只有一张
+            try {
+                /*
+                当操作的 SQL 类型是查询，且此时操作涉及的上、下游对象不为空
+                同时对下游对象要做的操作是插入数据，则获取下游表的信息，此时下游表其实只有一张
 
-            在hive中hiveOpType代表用户提上来的SQL操作的初步判断
-            HivePrivObjectActionType是获取对于权限对象的准确操作
-            使用时，要一起判断才能准确的把控当前实在干什么
-            如果只用其中一个，那么会有越过权限检测的情况发生
-            不同的hive版本，最好是自己测试一下不同操作触发的枚举类
-            hive3.1.3中insert as select语句 HiveOperationType 是 QUERY
-             */
-            if(hiveOpType == HiveOperationType.QUERY && inputHObjs.isEmpty() && !outputHObjs.isEmpty()
-                    && (  outputHObjs.get(0).getActionType() == HivePrivilegeObject.HivePrivObjectActionType.INSERT_OVERWRITE
-                    || outputHObjs.get(0).getActionType() == HivePrivilegeObject.HivePrivObjectActionType.INSERT)){
-
-                //获取下游表的 库、表名，由于是插入操作所以字段直接给默认的全字段标识
-                for(HivePrivilegeObject outputHObj: outputHObjs){
-                    String dbName = outputHObj.getDbname();
-                    String tblName = outputHObj.getObjectName();
-                    try {
+                在hive中hiveOpType代表用户提上来的SQL操作的初步判断
+                HivePrivObjectActionType是获取对于权限对象的准确操作
+                使用时，要一起判断才能准确的把控当前在干什么
+                如果只用其中一个，那么会有越过权限检测的情况发生
+                不同的hive版本，最好是自己测试一下不同操作触发的枚举类
+                hive3.1.3中insert as select语句 HiveOperationType 是 QUERY
+                 */
+                if(hiveOpType == HiveOperationType.QUERY && !inputHObjs.isEmpty() && !outputHObjs.isEmpty()
+                        && (  outputHObjs.get(0).getActionType() == HivePrivilegeObject.HivePrivObjectActionType.INSERT_OVERWRITE
+                        || outputHObjs.get(0).getActionType() == HivePrivilegeObject.HivePrivObjectActionType.INSERT)){
+                    //获取下游表的 库、表名
+                    for(HivePrivilegeObject outputHObj: outputHObjs){
+                        String dbName = outputHObj.getDbname();
+                        String tblName = outputHObj.getObjectName();
                         table = metastoreClient.getTable(dbName, tblName);
-                    } catch (TException e) {
-                        throw new HiveAuthzPluginException("字段鉴权，写入表对象获取失败 ",e);
+
+                        if ( !table.getOwner().equals(hiveAuthProvider.getUserName()) ){
+                            throw new HiveAuthzPluginException("字段鉴权 - 只有表owner才可以写表");
+                        }
+
+                        //如果写权限要放在外部就要鉴权，需要自己改造一下
+                        //List<String> checkfieldList = new ArrayList<>();
+                        //默认的全字段标识
+                        //checkfieldList.add(INSERT_VALUE_TAG);
+                        //checkPrivilegeObject.put(dbName + "." + tblName, checkfieldList);
+                        LOG.info("检测到数据落盘表： " + dbName + "." + tblName + " , 操作落盘");
                     }
-
-                    if ( !table.getOwner().equals(hiveAuthProvider.getUserName()) ){
-                        throw new HiveAuthzPluginException("只有表owner才可以写表");
-                    }
-
-                    //List<String> checkfieldList = new ArrayList<>();
-                    //默认的全字段标识
-                    //checkfieldList.add(INSERT_VALUE_TAG);
-                    //checkPrivilegeObject.put(dbName + "." + tblName, checkfieldList);
-                    LOG.info("检测到数据落盘表： " + dbName + "." + tblName + " , 操作落盘");
-                }
-            }
-
-            //下游的信息拿到之后，这里还要拿到上游的数据来源表
-            for (HivePrivilegeObject inputHObj : inputHObjs) {
-
-                //拿出查询字段集合
-                List<String> checkfieldList = inputHObj.getColumns();
-
-                if ( checkfieldList == null || checkfieldList.isEmpty() ) {
-                    /*
-                    着重解释一下这里的操作非法
-                    hive的鉴权用到的 inputHObj 是sql操作的对象，它依赖于hive对sql的语法识别
-                    如果不对字段为空做判断，此时就会由一种常见的特殊情况绕过字段检查
-                    也就是当 用户的sql中没有明确的访问字段时，getColumns返回的是一个空集合
-
-                    例如：select count(1) as cnt from default.a
-                        用户 A 提交上面的sql    查询用户 B 的 default.a 表
-                        此时检测到的字段会是个空集合
-
-                    当然实际使用中如果允许这种情况就不用这样写，只是在本例子中，下面会判断字段是否为空，为空时不会做鉴权
-
-                     */
-                    throw new HiveAuthzPluginException("字段鉴权,操作非法！不可跳过字段间接访问！");
                 }
 
-                String dbName = inputHObj.getDbname();
-                String tblName = inputHObj.getObjectName();
-                try {
+                // 前面下游的信息拿到之后，这里还要拿到上游的数据来源表
+                for (HivePrivilegeObject inputHObj : inputHObjs) {
+                    //拿出查询字段集合和库表名
+                    List<String> checkfieldList = inputHObj.getColumns();
+                    String dbName = inputHObj.getDbname();
+                    String tblName = inputHObj.getObjectName();
+
                     //通过元数据连接获取这个表
                     table = metastoreClient.getTable(dbName, tblName);
                     //成功获取到表对象，且表不是临时表，获取到的字段也不为空，当前用户不是查询表的owner，则放到要鉴权的表信息集合中
@@ -224,35 +217,24 @@ public class MyHiveAuthorization implements HiveAuthorizer {
                     if (null != table && !table.isTemporary() && null != checkfieldList && !checkfieldList.isEmpty() && !table.getOwner().equals(hiveAuthProvider.getUserName())) {
                         checkPrivilegeObject.put(dbName + "." + tblName, checkfieldList);
                     }
-                } catch (TException e) {
-                    throw new HiveAuthzPluginException("字段鉴权 , 获取表信息失败. ms:" + e.getMessage());
+                    LOG.info("检测到查询访问来自于目的表： " + dbName + "." + tblName + " , 访问字段：" + checkfieldList);
                 }
-                LOG.info("检测到查询访问来自于目的表： " + dbName + "." + tblName + " , 访问字段：" + checkfieldList);
-            }
 
-            //上面需要元数据连接的地方走完，这里关闭元数据连接
-            metastoreClient.close();
+                //上面需要元数据连接的地方走完，这里关闭元数据连接
+                metastoreClient.close();
 
-            //如果要鉴权的集合不是空的，则开始鉴权
-            if (checkPrivilegeObject.size() != 0) {
-                LOG.info("开始鉴权");
-                try {
-                    //程序触发checkPermissions方法后不会有 0 的情况，这里只是给个默认值
-                    int task_count = 0;
-                    if (checkPrivilegeObject.size() >= hp_maxsize) {
-                        task_count = hp_maxsize;
-                    } else {
-                        task_count = checkPrivilegeObject.size();
-                    }
-
-                    // 创建定长线程池 , 线程池长度  与 数据库连接池的大小 保持一致，这样每个任务都能那个一个连接
-                    ExecutorService executor = Executors.newFixedThreadPool(task_count);
-                    MysqlUtil mysqlUtil = new MysqlUtil(url,driver,timeout,username,password,task_count,0,hp_id_timeout,hp_lefttime);
-
-                    new SqlFieldAuthCheckUtil().checkPermissions(checkPrivilegeObject,hiveAuthProvider.getUserName(),executor,mysqlUtil);
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
+                //如果要鉴权的集合不是空的，则开始鉴权
+                if (checkPrivilegeObject.size() != 0) {
+                    LOG.info("开始鉴权");
+                    SqlFieldAuthCheckUtil.checkPermissions(checkPrivilegeObject,hiveAuthProvider.getUserName(),executor,mysqlUtil);
+                    LOG.info("鉴权结束");
                 }
+            }catch (HiveAuthzPluginException e){
+                throw e;
+            }catch (TException e) {
+                throw new HiveAuthzPluginException("字段鉴权 - 获取表信息失败. ms:" + e.getMessage());
+            }catch (Exception e) {
+                throw new HiveAuthzPluginException("字段鉴权 - 预期外异常 "+e.getMessage());
             }
 
         } else if ( hiveOpType == HiveOperationType.GRANT_PRIVILEGE || hiveOpType == HiveOperationType.REVOKE_PRIVILEGE

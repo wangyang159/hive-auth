@@ -10,26 +10,25 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 这类是用来对字段鉴权的工具类
- * 没有使用 static 修饰 ，因为同一个hive连接会话中肯能有多个需要鉴权的sql
- * 虽然同一个会话内语句都是顺序提交并执行，但是保险起见没有做成静态工具类
  */
 public class SqlFieldAuthCheckUtil {
 
     /**
      * 鉴权的核心方法
      * @param tableFieldMap 表为key，需鉴权字段List为value的一个map集合
+     * @param username 当前任务的提交人，也就是打开会话的用户
+     * @param executor 用来并行任务的线程池对象
+     * @param mysqlUtil 并行任务查询权限库的连接池对象
      * @throws Exception 这里先抛出了一个总的异常，因为调用这里的时候也是抛出去打断鉴权，没有其他的处理要求
      */
-    public void checkPermissions(Map<String, List<String>> tableFieldMap, String username,ExecutorService executor,MysqlUtil mysqlUtil) throws Exception {
-
+    public static void checkPermissions(Map<String, List<String>> tableFieldMap, String username,ExecutorService executor,MysqlUtil mysqlUtil) throws HiveAuthzPluginException {
         /*
-        1-2
-        errorOccurred是否应当触发没有权限异常的标志
+        1-1
+        errorOccurred通知其他并行任务，是否触发没有权限异常的标志，使得其他任务如果在刚开始阶段就不在继续了
 
         AtomicBoolean 是java提供的线程安全布尔类型，但它并不是线程锁实现的，而是CAS+volatile实现
 
@@ -65,12 +64,11 @@ public class SqlFieldAuthCheckUtil {
                 等你花大精力解决完安全限制，很可能还没有锁来的靠谱
 
              所以综合来说，多线程且非自带Atomic能解决的场景下，不会用volatile，而是去用锁
-
         */
         AtomicBoolean errorOccurred = new AtomicBoolean(false);
 
-        //1-3 存放所有鉴权任务的回调对象
-        List<Future<?>> futures = new ArrayList<>();
+        //1-2 存放所有并行鉴权任务的回调对象
+        List<Future<?>> futures = new ArrayList<>(tableFieldMap.entrySet().size());
 
         try {
             // 2-1 for循环遍历表-字段map，提交所有鉴权任务
@@ -84,16 +82,21 @@ public class SqlFieldAuthCheckUtil {
                 String table = entry.getKey();
                 List<String> fields = entry.getValue();
                 futures.add(executor.submit( () -> {
+                    //2-4 如果其他提交到线程池的任务，在当前线程任务开始开始前检查出了权限问题，就没有必要在执行了
+                    if (errorOccurred.get()) {
+                        return;
+                    }
+
                     try {
-                        // 2-4 提交的鉴权子任务
+                        // 2-4 提交鉴权子任务
                         checkAuth(table,fields,executor,errorOccurred,mysqlUtil,username);
                     } catch (Exception e) {
-                        throw new RuntimeException(e);
+                        throw new RuntimeException(e.getMessage());
                     }
                 } ));
             }
 
-            // 3-1 前面的循环提交完所有任务，或遇到需要停止的标记 errorOccurred.get为 true时(此时会抛出中断异常)，程序会执行到此处执行到此，通过回调对象来做对于的操作
+            // 3-1 前面的循环提交完所有任务，或遇到需要停止的标记 errorOccurred.get为 true时(此时会抛出中断异常)，程序会执行到此处执行到此，通过回调对象来做对应的操作
             for (Future<?> future : futures) {
                 /*
                 3-2 get方法会阻塞当前主进程，从而等待子线程结束，得到一个子线程回调结果
@@ -104,29 +107,42 @@ public class SqlFieldAuthCheckUtil {
             }
 
         } catch (Exception e){
-            throw e;
-        } finally {
-            // 4-1 最终关闭链接池和线程池
-            mysqlUtil.closePool();
-            shutdownExecutor(executor);
+            // 保险起见，调用一下数据库连接池的资源回收已经分配出去的连接
+            mysqlUtil.closeAllConnection();
+            // 子线程任务中鉴权或者是其他任何异常，停止线程池的所有任务，释放资源
+            for (Future<?> future : futures) {
+                future.cancel(true);
+            }
+            futures.clear();
+
+            //异常传递
+            if (e instanceof HiveAuthzPluginException) {
+                throw (HiveAuthzPluginException) e;
+            }else {
+                throw new HiveAuthzPluginException(e.getMessage());
+            }
+        }finally {
+            // 所有鉴权任务的相关流程执行完成，释放所有连接池和线程池的资源
+            mysqlUtil.closeAllConnection();
+            futures.clear();
         }
     }
 
     /**
      * 2-4 控制执行单个鉴权任务的方法
-     * @param table
-     * @param fields
+     * @param table 表
+     * @param fields 字段集合
      * @param executor
      * @param errorOccurred
      * @param mysqlUtil
      * @param username
      * @throws HiveAuthzPluginException
      */
-    private void checkAuth(String table, List<String> fields, ExecutorService executor, AtomicBoolean errorOccurred, MysqlUtil mysqlUtil,String username) throws HiveAuthzPluginException {
+    private static void checkAuth(String table, List<String> fields, ExecutorService executor, AtomicBoolean errorOccurred, MysqlUtil mysqlUtil,String username) throws HiveAuthzPluginException {
         /* 2-5
          获取是否外部原因需要中断任务，interrupted在获取中断标识之后
          会把已有的中断状态设置为默认为false，其实本身是一种中断信号的接力棒，如果上游发出中断要求
-         这里获取并操作相关的事宜后，要把中断信号恢复成默认的，不影响其他框架获取
+         这里获取并操作相关的事宜后，要把中断信号恢复成默认的，不影响整个流程其他框架获取
 
          errorOccurred.get 必须在这里检查是否整个鉴权任务不需要再执行了
          因为按照现有的逻辑来说，由于线程池任务提交很快，或者由于时间差等极端情况
@@ -158,60 +174,47 @@ public class SqlFieldAuthCheckUtil {
         sql.append(") and a.last_time>=NOW() and a.auth_flag>=1 ");
 
         Connection connection = null;
-        boolean no_sqlp = false;
+        //是否发生权限异常，不用上面的errorOccurred是因为不能达到触发预期
+        boolean auth_err_flag = false;
         try {
             connection = mysqlUtil.getConnection();
-            ResultSet resultSet = connection.prepareStatement(sql.toString()).executeQuery();
+            ResultSet resultSet = connection.prepareStatement(sql.toString(),
+                    ResultSet.TYPE_SCROLL_INSENSITIVE,
+                    ResultSet.CONCUR_READ_ONLY).executeQuery();
 
-            //复用stringbuilder
+            //复用stringbuilder，这个字符串缓冲器在子任务内，不会有线程安全问题
             sql.delete(0,sql.length());
             //如果返回的已有权限不为空集合,也就是last方法返回了true，并且最后一行的行号和查询字段数不一样，说明权限不够，则拼接出已有的权限列
-            resultSet.last();//后期改造不要把这个方法放在if体里面，会无法命中
+            resultSet.last();//后期改造不要把这个方法放在if体里面，会无法命中，不过它运行之后没必要判断它的返回值，用行号判断就足够了
             if ( resultSet.getRow() != fields.size()){
-                no_sqlp = true;
+                auth_err_flag = true;
+                resultSet.beforeFirst();//让resultSet的指针回到表头位置
                 sql.append("[ ");
                 while (resultSet.next()){
                     sql.append(resultSet.getString("field")).append(" ");
                 }
                 sql.append("]");
-                throw new HiveAuthzPluginException(table+" 没有足够的权限，访问字段："+fields+" 已有权限："+sql.toString());
+                //更新线程池任务状态，如果是false就更新为true
+                errorOccurred.compareAndSet(false, true);
+                throw new HiveAuthzPluginException("字段鉴权 - 用户:"+username+" 对"+table+" 没有足够的权限，访问字段："+fields+" 已有权限："+sql.toString());
             }
             //除此之外权限正常通过
 
         } catch (SQLException e) {
-            throw new HiveAuthzPluginException("鉴权库查询异常",e);
+            //发生sql异常的时候，和字段鉴权异常一样，定制所有的任务，并保障后面资源回收表示正常，不过一般不会正常不会发生这个异常
+            errorOccurred.compareAndSet(false, true);
+            auth_err_flag = true;
+            throw new HiveAuthzPluginException("字段鉴权 - 鉴权库查询异常 "+e.getMessage());
         } finally {
-            //关闭这个单个鉴权的sql连接
+            //关闭本次任务用的数据库连接
             mysqlUtil.closeConnection(connection);
-            //如果是异常导致方法结束，就要关闭整体的连接池和线程池
-            if ( no_sqlp ){
-                mysqlUtil.closePool();
-                shutdownExecutor(executor);
+            // 如果出现权限报错则此处回收所有数据库连接池线程资源，至于任务并行的线程池在最外层监听任务的地方回收
+            // 这样在执行流程上可以使得连接池在此处回收完成后，上面的任务并行线程池再开始最后释放线程任务
+            if (auth_err_flag){
+                mysqlUtil.closeAllConnection();
             }
         }
 
-    }
-
-    /**
-     * 4-1 最终线程池的关闭方法
-     * @param executor
-     */
-    private void shutdownExecutor(ExecutorService executor) throws HiveAuthzPluginException {
-        try {
-            // 4-2 判断线程池是否由于触发了权限问题而已经停止
-            if (!executor.isShutdown()) {
-                // 4-3 先尝试温和关闭
-                executor.shutdown();
-                // 4-4 等待现有任务响应中断，如果5秒后没得到回应，则强制停止
-                if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    executor.shutdownNow();
-                }
-            }
-        } catch (InterruptedException e) {
-            executor.shutdownNow();
-            Thread.currentThread().interrupt();
-            throw new HiveAuthzPluginException("优雅连接池关闭存在异常");
-        }
     }
 
 }
