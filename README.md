@@ -59,16 +59,19 @@ mvn -DskipTests=true clean package
     <value>true</value>
 </property>
 
+<!-- sql鉴权组件 -->
 <property>
     <name>hive.security.authorization.manager</name>
     <value>com.wy.auth.MyHiveAuthorizationFactory</value>
 </property>
 
+<!-- 元数据被操作后的鉴权插件 -->
 <property>
     <name>hive.metastore.event.listeners</name>
     <value>com.wy.meta.MyMetaStoreEventListener</value>
 </property>
 
+<!-- 元数据被操作前的鉴权插件 -->
 <property>
    <name>hive.metastore.pre.event.listeners</name>
    <value>com.wy.meta.MyMetaStorePreEventListener</value>
@@ -256,12 +259,17 @@ SET FOREIGN_KEY_CHECKS = 1;
 5、将权限库的连接信息，写在hive的hive-site.xml文件中
 
 ```
+<!-- 鉴权库的连接url -->
 <property>
     <name>hive.auth.database.url</name>
     <value>jdbc:mysql://192.168.0.110:3306/hive_auth?useUnicode=true&amp;characterEncoding=UTF-8&amp;serverTimezone=Asia/Shanghai</value>
 </property>
 
-<!-- 这里用的是mysql5.x的连接驱动，且maven依赖为provided，如果你用的是mysql8或者其他情况自己编译或者直接在hive的lib下替换 -->
+<!--
+这里用的是mysql5.x的连接驱动，且maven依赖为provided
+如果你用的是mysql8或者其他情况自己编译或者直接在hive的lib下替换
+注意！！！一定要和hive元数据服务用同一个版本的driver，不然会类冲突
+-->
 <property>
     <name>hive.auth.database.driver</name>
     <value>com.mysql.jdbc.Driver</value>
