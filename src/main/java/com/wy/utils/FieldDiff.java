@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 /**
  * 比较表字段变化的算法类
@@ -22,6 +23,8 @@ public class FieldDiff {
     public List<FieldSchema> modifiedFields = new ArrayList<>();
     //没有发生改变的字段
     public List<FieldSchema> unchangedFields = new ArrayList<>();
+    //新表字段列表
+    public String fieldNames;
 
     private List<FieldSchema> oldtable_fields = null;
     private List<FieldSchema> newtable_fields = null;
@@ -30,12 +33,22 @@ public class FieldDiff {
         this.oldtable_fields = getAllFields(tableEvent.getOldTable());
         this.newtable_fields = getAllFields(tableEvent.getNewTable());
         this.compareFieldLists(oldtable_fields, newtable_fields);
+        //处理出新表字段的列表
+        StringBuilder tmp = new StringBuilder();
+        newtable_fields.stream().map( f -> f.getName() ).forEach(name -> tmp.append(name).append(","));
+        tmp.deleteCharAt(tmp.length()-1);
+        this.fieldNames = tmp.toString();
     }
 
     public FieldDiff(PreAlterTableEvent tableEvent) {
         this.oldtable_fields = getAllFields(tableEvent.getOldTable());
         this.newtable_fields = getAllFields(tableEvent.getNewTable());
         this.compareFieldLists(oldtable_fields, newtable_fields);
+        //处理出新表字段的列表
+        StringBuilder tmp = new StringBuilder();
+        newtable_fields.stream().map( f -> f.getName() ).forEach(name -> tmp.append(name).append(","));
+        tmp.deleteCharAt(tmp.length()-1);
+        this.fieldNames = tmp.toString();
     }
 
     /**
@@ -93,6 +106,7 @@ public class FieldDiff {
                 }
             }
         }
+
     }
 
     /**

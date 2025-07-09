@@ -144,9 +144,9 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
                     throw new MetaException("没有owner权限");
                 }
 
-                //4、如果 owner 权限通过 ， 校验库名是否合法更改 ， 开源hive支持变更库，这一点按实际需求来，通常是一刀切，如果不是就要校验改后的库是否有权限
-                if ( !dbName.equals(newtable.getDbName()) ){
-                    throw new MetaException("不能变更库");
+                //4、如果 owner 权限通过 ， 校验库名是否合法更改 ， 开源hive支持变更库，这一点按实际需求来，通常是一刀切，这里也是，如果不是就要校验改后的库是否有权限
+                if ( !dbName.equals(newtable.getDbName()) || !tableName.equals(newtable.getTableName()) ){
+                    throw new MetaException("不能变更库表名");
                 }
 
                 //5、通常要校验 location 相关，比如为了有的公司不允许分区表更改location

@@ -19,6 +19,7 @@ import java.math.BigInteger;
 import java.sql.*;
 import java.util.Iterator;
 import java.util.List;
+import java.util.stream.Stream;
 
 /**
  * 这个类在hive元数据的操作完成之后触发，注意是完成之后！！干什么，起到一个回调的作用
@@ -140,19 +141,27 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         StringBuilder sql = new StringBuilder();
         try {
             connection = mysqlUtil.getConnection();
-            CallableStatement callableStatement = connection.prepareCall("{call InsertTableInfo(?,?)}");
+            CallableStatement callableStatement = connection.prepareCall("{call InsertTableInfo(?,?,?)}");
             callableStatement.setString(1,owner);
             callableStatement.setString(2,dbName+"."+tableName);
+            //处理表字段列表
+            Stream<String> cols = table.getSd().getCols().stream().map(col -> col.getName());
+            Stream<String> pars = table.getPartitionKeys().stream().map(par -> par.getName());
+            StringBuilder tmp = new StringBuilder();
+            cols.forEach(col -> {tmp.append(col).append(",");});
+            pars.forEach(par -> {tmp.append(par).append(",");});
+            tmp.deleteCharAt(tmp.length()-1);
+            callableStatement.setString(3,tmp.toString());
             ResultSet resultSet = callableStatement.executeQuery();
             resultSet.next();
             if (resultSet.getInt("result") == -1){
                 LOGGER.info("鉴权库缺失用户数据，需联系引擎管理添加，但这不影响表的创建，只是鉴权数据owner为空 - 录入表: {} - 缺失owner: {}",dbName+"."+tableName,owner);
                 throw new MetaException("鉴权库缺失用户数据，需联系引擎管理添加，但这不影响表的创建，只是鉴权数据中owner为空 - 录入表: "+dbName+"."+tableName+" - 缺失owner: "+owner);
             } else {
-                LOGGER.info("表信息录入 表:{} owner:{}",dbName+"."+tableName,owner);
+                LOGGER.info("表信息录入成功 表:{} owner:{} 字段:{}",dbName+"."+tableName,owner,tmp.toString());
             }
         } catch (SQLException e) {
-            throw new MetaException("清理表权限信息出现异常 - "+e.getMessage());
+            throw new MetaException("录入表信息出现异常 - "+e.getMessage());
         } finally {
             mysqlUtil.closeConnection(connection);
         }
@@ -188,18 +197,17 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
 
         //将外部权限库中的表、字段全系数据删除
         Connection connection=null;
-        StringBuilder sql = new StringBuilder();
         try {
             connection = mysqlUtil.getConnection();
             CallableStatement callableStatement = connection.prepareCall("{call DeleteTableAndAuth(?)}");
             callableStatement.setString(1,dbName+"."+tableName);
             ResultSet resultSet = callableStatement.executeQuery();
             ResultSetMetaData metaData = resultSet.getMetaData();
+            resultSet.next();
             if (metaData.getColumnCount() == 3){
-                resultSet.next();
-                LOGGER.info("权限回收 表:{} 回收权限个数:{} 回收表信息个数:{}",dbName+"."+tableName,resultSet.getInt("auth_records_deleted"),resultSet.getInt("info_records_deleted"));
+                LOGGER.info("权限回收 {} {} {}",resultSet.getString("table_name"),resultSet.getString("auth_records_deleted"),resultSet.getString("info_records_deleted"));
             } else if (metaData.getColumnCount() == 2) {
-                LOGGER.info("未发现可回收权限 表:{}",dbName+"."+tableName);
+                LOGGER.info("{} 表:{}",resultSet.getString("message"),resultSet.getString("table_name"));
             }
         } catch (SQLException e) {
             throw new MetaException("清理表权限信息出现异常 - "+e.getMessage());
@@ -216,6 +224,7 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         }
 
         Table oldtable = tableEvent.getOldTable();
+        Table newTable = tableEvent.getNewTable();
         String tableType = oldtable.getTableType();
 
         //视图不需要做操作
@@ -233,12 +242,15 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
 
         /*
          这里留一个关键注释：
-          FieldDiff 类中预留有4组可区分的字段操作类型，按照需要自己更改生成逻辑即可
-          在这里只做了最基本的，对删除字段权限回收
-          在业内多数情况下会有很多丰富的权限需求，对于表结构的更改来讲
-          就像元数据变动前置类中注释写的那样，普遍会有某些情况表是不允许改变的，当然这种情况下会在前置类中拦截
-          而这里要说的是，对于外部鉴权系统普遍会有另行收集表结构的需求
-          就如上面建表时写入最基本的表名和owner那样
+          FieldDiff 类中有4组可区分的字段操作类型，按照需要自己更改生成逻辑即可
+          在这里只做了最基本的，对删除字段权限回收，以及即使的更新鉴权库中的字段列表
+
+          而在业内多数情况下会有很多丰富的权限需求，对于表结构的更改来讲
+          就像元数据变动前置类中注释写的那样，普遍会有某些情况表是不允许改变的
+          当然这种情况下会在前置类中拦截
+
+          而这里要说的是，对于外部鉴权系统普遍都是另行收集表结构
+          就如上面建表时写入最基本的表名、owner、字段列那样
           虽然这些数据在hive元数据库中都有，但是为了可扩展性，以及hive元数据库自身的安全以及稳定来讲
           基本不可能让其他自定义的功能直接访问hive元数据服务的库去，因此这就看具体使用时方案怎么决定了
 
@@ -276,16 +288,20 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
                         SERDE_ID  系列化类型的id 是 SERDES表的外键，但是SERDES表除了系列化类名称之外其他一般都是空的
          */
         FieldDiff fieldDiff = new FieldDiff(tableEvent);
+        boolean changed = false;//是否发生改变的改变的标识，不用fieldDiff的为更改是因为它不包含删除字段
 
         List<FieldSchema> addedFields = fieldDiff.addedFields;
         //对于判定为新增的字段，要做什么操作
         if (addedFields != null && !addedFields.isEmpty() && addedFields.size()!=0) {
+            changed = true;
             LOGGER.info("新增字段 {}",addedFields);
         }
 
         List<FieldSchema> deletedFields = fieldDiff.deletedFields;
-        //对于判定为删除的字段，要做什么操作，通常是回收所以字段已经失效的权限数据
+        //对于判定为删除的字段，要做什么操作
+        // 通常是回收所以字段已经失效的权限数据
         if (deletedFields != null && !deletedFields.isEmpty() && deletedFields.size()!=0) {
+            changed = true;
             LOGGER.info("删除字段 {}",deletedFields);
             Connection connection = null;
             try {
@@ -313,6 +329,24 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
                 throw new MetaException("回收删除字段权限出现异常"+e.getMessage());
             } finally {
                 mysqlUtil.closeConnection(connection);
+            }
+        }
+
+        // 如果上面发生了字段的删除或者新增则要更新鉴权库中的表字段
+        // 后期改造要注意是否要考虑fieldDiff中旧字段发生改变的逻辑
+        if (changed) {
+            Connection connection;
+            try {
+                connection = mysqlUtil.getConnection();
+                PreparedStatement preparedStatement = connection.prepareStatement("update db_tb_info set tb_fields = ? where db_tb_name=? ");
+                preparedStatement.setString(1, fieldDiff.fieldNames);
+                preparedStatement.setString(2,newTable.getDbName()+"."+newTable.getTableName());
+                int i = preparedStatement.executeUpdate();
+                if ( i!=0 ){
+                    LOGGER.info("更新表信息字段列表，数据库返回行数: {}",i);
+                }
+            } catch (SQLException e) {
+                throw new MetaException("更新字段列表出现错误 "+e.getMessage());
             }
         }
 
