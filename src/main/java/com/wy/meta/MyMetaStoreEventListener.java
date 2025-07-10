@@ -6,12 +6,10 @@ import com.wy.utils.MysqlUtil;
 import com.wy.utils.UserUtil;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.MetaStoreEventListener;
-import org.apache.hadoop.hive.metastore.api.FieldSchema;
-import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.hadoop.hive.metastore.api.Partition;
-import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.api.*;
 import org.apache.hadoop.hive.metastore.events.*;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveAuthzPluginException;
+import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -118,6 +116,18 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         String tableType = table.getTableType();
         String owner = table.getOwner();
 
+        //如果表路径为空 获取应当的默认location
+        if (location == null || location.isEmpty()) {
+            Database db;
+            try {
+                db = tableEvent.getHandler().get_database(dbName);
+            } catch (TException e) {
+                throw new MetaException("库信息获取失败 db:" +dbName + " table:" + tableName);
+            }
+            //此处均按照表在库下判断，所以第三个参数 isExternal 只传false
+            location = String.valueOf(tableEvent.getHandler().getWh().getDefaultTablePath(db,tableName,false));
+        }
+
         //获取用户身份，也就是owner
         String userName = UserUtil.getUserName();
 
@@ -131,17 +141,11 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         LOGGER.info("|当前执行用户是       ： " + userName);
         LOGGER.info("---------------------");
 
-        /*
-        下面就是按需将权限写入你的外部系统中，当然这只在需要给非owner权限的情况下
-        应为owner的权限在鉴权时，使用了元数据服务中的owner做判断，当操作表的用户不是owner才会走鉴权库相关逻辑
-        这里将表面写入鉴权库
-         */
-        //将外部权限库中的表、字段全系数据删除
+        //下面就是按需将表信息按需写入鉴权库中
         Connection connection=null;
-        StringBuilder sql = new StringBuilder();
         try {
             connection = mysqlUtil.getConnection();
-            CallableStatement callableStatement = connection.prepareCall("{call InsertTableInfo(?,?,?)}");
+            CallableStatement callableStatement = connection.prepareCall("{call InsertTableInfo(?,?,?,?)}");
             callableStatement.setString(1,owner);
             callableStatement.setString(2,dbName+"."+tableName);
             //处理表字段列表
@@ -152,6 +156,8 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
             pars.forEach(par -> {tmp.append(par).append(",");});
             tmp.deleteCharAt(tmp.length()-1);
             callableStatement.setString(3,tmp.toString());
+            //表路径
+            callableStatement.setString(4,location);
             ResultSet resultSet = callableStatement.executeQuery();
             resultSet.next();
             if (resultSet.getInt("result") == -1){
@@ -335,7 +341,7 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         // 如果上面发生了字段的删除或者新增则要更新鉴权库中的表字段
         // 后期改造要注意是否要考虑fieldDiff中旧字段发生改变的逻辑
         if (changed) {
-            Connection connection;
+            Connection connection = null;
             try {
                 connection = mysqlUtil.getConnection();
                 PreparedStatement preparedStatement = connection.prepareStatement("update db_tb_info set tb_fields = ? where db_tb_name=? ");
@@ -347,15 +353,9 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
                 }
             } catch (SQLException e) {
                 throw new MetaException("更新字段列表出现错误 "+e.getMessage());
+            } finally {
+                mysqlUtil.closeConnection(connection);
             }
-        }
-
-        //如果表存储位置发生改变，要做什么操作
-        Table newtable = tableEvent.getNewTable();
-        String oldtable_location = oldtable.getSd().getLocation();
-        String newtable_location = newtable.getSd().getLocation();
-        if ( ! oldtable_location.equals(newtable_location) ) {
-            LOGGER.info("存储地址变更 {} -> {} ", oldtable_location, newtable_location);
         }
 
         //等等。。其他的情况

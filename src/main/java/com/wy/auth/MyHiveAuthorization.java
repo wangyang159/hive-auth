@@ -271,8 +271,10 @@ public class MyHiveAuthorization implements HiveAuthorizer {
                 throw new HiveAuthzPluginException("鉴权 , 获取表信息失败. ms:" + e.getMessage());
             }
 
+        } else if (hiveOpType == HiveOperationType.ALTERPARTITION_LOCATION) {
+            throw new HiveAuthzPluginException("不允许更改分区存储路径");
         } else {
-            //关闭元数据连接
+            //没有任何需要，关闭元数据连接
             if (metastoreClient != null) {
                 metastoreClient.close();
             }

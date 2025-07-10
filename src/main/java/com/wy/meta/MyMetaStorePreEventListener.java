@@ -79,7 +79,6 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
                         throw new MetaException("库信息获取失败 db:" +dbName + " table:" + tableName);
                     }
                     //此处均按照表在库下判断，所以第三个参数 isExternal 只传false
-                    //注意这里只是预留了路径的校验，不要把它set进table，那可能会导致表恒定的变成外表
                     location = String.valueOf(preCreateTableEvent.getHandler().getWh().getDefaultTablePath(db,tableName,false));
                 }
 
@@ -89,8 +88,7 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
                 LOGGER.info("serializationLib:"+ serializationLib);
                 if(!table.getSd().getSerdeInfo().getSerializationLib().isEmpty()
                         && !table.getSd().getSerdeInfo().getSerializationLib().equals("org.apache.paimon.hive.PaimonSerDe")){
-                    //不是Paimon表 才进行校验，因为Paimon实际数据不存储在传统的hdfs中
-
+                    //不是Paimon表 才进行校验，因为Paimon实际数据不存储在传统的hdfs中，这里不允许表location长度超过500个字符，和鉴权库中一致
                 }
 
                 //3、鉴权系统中表存在索引，因此要限制表全称和字段长度
@@ -149,9 +147,20 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
                     throw new MetaException("不能变更库表名");
                 }
 
-                //5、通常要校验 location 相关，比如为了有的公司不允许分区表更改location
-                if ( oldTable.getPartitionKeysSize() > 0 && !oldTable.getSd().getLocation().equals(newtable.getSd().getLocation()) ){
-                    throw new MetaException("分区表不允许更改表路径");
+                /*
+                5、通常要校验 location 相关，这里不允许发生任何情况下的表路径变更
+
+                解释一下为什么不允许：
+                hive本身确实允许later更改表的location，但是在实际使用中这种场景非常少，少到基本不会遇到
+                就算允许更改，hive变更的也只是元数据，表数据文件以及目标路径需要收手动干预维护
+                因此开源场景下改表路径需要付出的精力和新建一张新表没有差别
+                同时当你要做字段级别鉴权的时候，通常使用ranger-hdfs加上自己的改造控制路径权限
+                这时如果你允许表路径被变更，那意味着你要在手动维护表数据的成本上还要加上ranger权限策略的维护
+                为了一个基本不用且本身就要付出不少尽量成本的事情，再付出更多的精力这是一个吃力不讨好的事
+                所以这里一刀切了
+                */
+                if ( !oldTable.getSd().getLocation().equals(newtable.getSd().getLocation()) ){
+                    throw new MetaException("不允许更改表路径");
                 }
 
                 //6、其他按需管控操作细节，就和元数据操作提交之后触发的监听中类似的逻辑，只不过这里偏向于权限，元数据操作之后的监听偏向于扫尾工作
@@ -210,7 +219,7 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
                         throw new MetaException("不能操作视图，以及未知路径的表");
 
                 } catch (TException e) {
-                    throw new RuntimeException(e.getMessage());
+                    throw new MetaException("获取表信息出现异常 "+e.getMessage());
                 }
                 break;
             case CREATE_FUNCTION:
