@@ -158,7 +158,7 @@ public class SqlFieldAuthCheckUtil {
         // 2-6 得到并处理鉴权结果
         StringBuilder sql = new StringBuilder();
 
-        // 用 StringBuilder 而不用 ？ 替换 是因为字段集合需要拼接
+        // 用 StringBuilder 而不用 ？ 替换 是因为字段集合需要拼接，直接使用占位符会出现问题
         sql.append("select a.field,a.auth_flag,a.last_time ")
                 .append("from db_tb_auth a inner join db_tb_info b on a.db_tb_id=b.db_tb_id ")
                 .append("inner join user_info c on a.user_id=c.user_id ")
@@ -177,7 +177,7 @@ public class SqlFieldAuthCheckUtil {
         //是否发生权限异常，不用上面的errorOccurred是因为不能达到触发预期
         boolean auth_err_flag = false;
         try {
-            connection = mysqlUtil.getConnection();
+            connection = mysqlUtil.getConnection(true);
             ResultSet resultSet = connection.prepareStatement(sql.toString(),
                     ResultSet.TYPE_SCROLL_INSENSITIVE,
                     ResultSet.CONCUR_READ_ONLY).executeQuery();

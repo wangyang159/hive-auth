@@ -1,5 +1,7 @@
 package com.wy.meta;
 
+import com.wy.exception.HiveMetaStoreException;
+import com.wy.utils.MysqlUtil;
 import com.wy.utils.UserUtil;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.MetaStorePreEventListener;
@@ -12,6 +14,11 @@ import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.math.BigInteger;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.List;
 
 /**
@@ -23,8 +30,66 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
 
     private static String META_ALLUXIO_ENABLE = "hive.metastore.part.alluxio.enable";
 
+    private MysqlUtil mysqlUtil;
+    private String usedLocation = "SELECT db_tb_name FROM db_tb_info FORCE INDEX(表存储路径索引) WHERE ? like concat(tb_location,'%') ORDER BY tb_location DESC LIMIT 1";
+
     public MyMetaStorePreEventListener(Configuration config) {
         super(config);
+
+        //初始化来连接池和线程池的配置参数
+        String url;
+        String driver;
+        Long timeout;
+        String username;
+        String password;
+        int hp_maxsize;
+        int hp_minidle;
+        long hp_id_timeout;
+        long hp_lefttime;
+
+        //初始化鉴权库的连接池
+        url = config.get("hive.auth.database.url");
+        driver = config.get("hive.auth.database.driver");
+        username = config.get("hive.auth.database.username");
+        password = config.get("hive.auth.database.password");
+
+        //数据库连接超时时间
+        BigInteger timeout_bi = new BigInteger(config.get("hive.auth.database.timeout"));
+        if ( timeout_bi.compareTo(BigInteger.valueOf(0)) < 0 || timeout_bi.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0   ){
+            throw new HiveMetaStoreException("鉴权连接池连接超时时间超过预期Long值");
+        }
+        timeout = timeout_bi.longValue();
+
+        //数据库连接池大小校验
+        BigInteger hp_maxsize_bi = new BigInteger(config.get("hive.auth.database.meta.listener.hikari.pool.maxsize"));
+        if ( hp_maxsize_bi.compareTo(BigInteger.valueOf(0)) < 0 || hp_maxsize_bi.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0 ){
+            throw new HiveMetaStoreException("鉴权连接池大小超过预期Int值");
+        }
+        hp_maxsize = hp_maxsize_bi.intValue();
+
+        //数据库连接池空闲连接大小校验
+        BigInteger hp_minidle_bi = new BigInteger(config.get("hive.auth.database.hikari.pool.minidle"));
+        if ( hp_minidle_bi.compareTo(BigInteger.valueOf(0)) < 0 || hp_minidle_bi.compareTo(BigInteger.valueOf( hp_maxsize_bi.intValue() / 2 )) > 0   ){
+            throw new HiveMetaStoreException("鉴权连接池空闲连接大小超过预期Int值");
+        }
+        hp_minidle = hp_minidle_bi.intValue();
+
+        //数据库连接池空闲超时校验
+        BigInteger hp_id_timeout_bi = new BigInteger(config.get("hive.auth.database.hikari.pool.idle.timeout"));
+        if ( hp_id_timeout_bi.compareTo(BigInteger.valueOf(0)) < 0 || hp_id_timeout_bi.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0  ){
+            throw new HiveMetaStoreException("鉴权连接池空闲超时时间超过预期Long值");
+        }
+        hp_id_timeout = hp_id_timeout_bi.longValue();
+
+        //数据库连接池连接最大存活时间校验
+        BigInteger hp_lefttime_bi = new BigInteger(config.get("hive.auth.database.hikari.pool.max.lifetime"));
+        if (  hp_lefttime_bi.compareTo(hp_id_timeout_bi) < 0 || hp_lefttime_bi.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0 ) {
+            throw new HiveMetaStoreException("鉴权连接池连接存在时间超过预期Long值");
+        }
+        hp_lefttime = hp_lefttime_bi.longValue();
+
+        mysqlUtil = new MysqlUtil(url,driver,timeout,username,password,hp_maxsize,hp_minidle,hp_id_timeout,hp_lefttime);
+
         System.out.println("Hive MetaStorePre Plugin Initialized! 元数据辅助组件接入! ");
     }
 
@@ -53,8 +118,10 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
                 location = preCreateDatabaseEvent.getDatabase().getLocationUri();
 
                 //一般情况下不会没有默认的路径，除非是非法语句提交
-                if (location == null)
+                if (location == null || location.isEmpty())
                     throw new MetaException("建库必须指定location(hdfs).");
+                if (location.length() > 400)
+                    throw new MetaException(preCreateDatabaseEvent.getDatabase().getName() + "  的库路径超出400个字符");
 
                 break;
             case DROP_DATABASE:
@@ -82,13 +149,35 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
                     location = String.valueOf(preCreateTableEvent.getHandler().getWh().getDefaultTablePath(db,tableName,false));
                 }
 
-                //表路径的校验，有的地方地底层路径做了统一规划，不过要跳过Paimon表
-                // getSd 表的存储描述 、getSerdeInfo系列化和反系列化内容、getSerializationLib系列化类库
+                // 表路径的校验，有的地方地底层路径做了统一规划，不过要跳过Paimon表
+                // getSd 表的配置描述 、getSerdeInfo系列化和反系列化内容、getSerializationLib系列化类库
                 String serializationLib = table.getSd().getSerdeInfo().getSerializationLib();
                 LOGGER.info("serializationLib:"+ serializationLib);
                 if(!table.getSd().getSerdeInfo().getSerializationLib().isEmpty()
                         && !table.getSd().getSerdeInfo().getSerializationLib().equals("org.apache.paimon.hive.PaimonSerDe")){
                     //不是Paimon表 才进行校验，因为Paimon实际数据不存储在传统的hdfs中，这里不允许表location长度超过500个字符，和鉴权库中一致
+                    //同时检查表路径是否已经被使用，实际使用中就是有憨憨以外表的方式写了一个已存在的表路径，导致两张表的数据都完蛋了
+                    if ( location.length() > 500 ) {
+                        throw new MetaException(dbName + "." + tableName +" 表存储路径的长度超过了500个字符");
+                    }else if ( tableType.equals("EXTERNAL_TABLE") ) {
+                        //如果没有超过，且建的是个外表，检查是否存在已使用这个路径的表
+                        Connection connection = null;
+                        try {
+                            connection = mysqlUtil.getConnection(false);
+                            PreparedStatement preparedStatement = connection.prepareStatement(usedLocation);
+                            preparedStatement.setString(1, location);
+                            ResultSet resultSet = preparedStatement.executeQuery();
+                            resultSet.next();
+                            if ( resultSet.getRow() != 0 ) {
+                                //如果 执行了next 行号还是 0 则说明当前使用的路径没有被其他表使用，反之报错
+                                throw new MetaException("当前表存储路径 "+location+" 已经被 "+resultSet.getString("db_tb_name")+" 表使用");
+                            }
+                        } catch (SQLException e) {
+                            throw new MetaException("检查建表时，是否存在已用表出现异常 "+e.getMessage());
+                        } finally {
+                            mysqlUtil.closeConnection(connection);
+                        }
+                    }
                 }
 
                 //3、鉴权系统中表存在索引，因此要限制表全称和字段长度
@@ -117,7 +206,7 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
 
                 //下面是删表时，权限校验。只能owner删除
                 if ( !userName.equals(table.getOwner()) ){
-                    throw new MetaException("没有owner权限");
+                    throw new MetaException("没有owner权限 - 无法删除表："+dbName+"."+tableName);
                 }
 
                 break;
@@ -152,8 +241,9 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
 
                 解释一下为什么不允许：
                 hive本身确实允许later更改表的location，但是在实际使用中这种场景非常少，少到基本不会遇到
-                就算允许更改，hive变更的也只是元数据，表数据文件以及目标路径需要收手动干预维护
-                因此开源场景下改表路径需要付出的精力和新建一张新表没有差别
+                而hive在insert时，不能另行制定分区路径，因此写数据的同时分区只能在表路径下
+                这样的场景下，就算允许alter更改，hive变更的也只是元数据，表数据文件以及目标路径需要收手动干预维护
+                因此开源场景下改表路径需要付出的精力和新建一张新表没有差别，而且在本插件中还要注意有长度限制
                 同时当你要做字段级别鉴权的时候，通常使用ranger-hdfs加上自己的改造控制路径权限
                 这时如果你允许表路径被变更，那意味着你要在手动维护表数据的成本上还要加上ranger权限策略的维护
                 为了一个基本不用且本身就要付出不少尽量成本的事情，再付出更多的精力这是一个吃力不讨好的事
@@ -181,7 +271,7 @@ public class MyMetaStorePreEventListener extends MetaStorePreEventListener {
                     if (partitions.get(i).getSd() != null && partitions.get(i).getSd().getLocation() != null && !partitions.get(i).getSd().getLocation().startsWith(finalLocation)){
                         throw new MetaException("分区的路径不能改为非表下路径");
                     }else{
-                        //hive的语法中add语句只能指定统一的一个路径所以第一次符合规范后循环就可以结束了，后续发现特殊情况再说
+                        //hive的语法中add语句只能指定统一的一个路径所以第一次符合规范后循环就可以结束了，且正常来说就只有一个元素，后续发现特殊情况再说
                         break;
                     }
                 }

@@ -34,6 +34,12 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
     private static final Logger LOGGER = LoggerFactory.getLogger(MyMetaStoreEventListener.class);
 
     private MysqlUtil mysqlUtil;
+    //新增表信息用的sql
+    String insertTbInfo = "{call InsertTableInfo(?,?,?,?)}";
+    //删除表信息用的sql
+    String dropTbInfo = "{call DeleteTableAndAuth(?)}";
+    //更新表用的sql
+    String updateTbInfo = "update db_tb_info set tb_fields = ? where db_tb_name=? ";
 
     public MyMetaStoreEventListener(Configuration config) throws HiveMetaStoreException {
         super(config);
@@ -144,8 +150,8 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         //下面就是按需将表信息按需写入鉴权库中
         Connection connection=null;
         try {
-            connection = mysqlUtil.getConnection();
-            CallableStatement callableStatement = connection.prepareCall("{call InsertTableInfo(?,?,?,?)}");
+            connection = mysqlUtil.getConnection(false);
+            CallableStatement callableStatement = connection.prepareCall(insertTbInfo);
             callableStatement.setString(1,owner);
             callableStatement.setString(2,dbName+"."+tableName);
             //处理表字段列表
@@ -161,8 +167,7 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
             ResultSet resultSet = callableStatement.executeQuery();
             resultSet.next();
             if (resultSet.getInt("result") == -1){
-                LOGGER.info("鉴权库缺失用户数据，需联系引擎管理添加，但这不影响表的创建，只是鉴权数据owner为空 - 录入表: {} - 缺失owner: {}",dbName+"."+tableName,owner);
-                throw new MetaException("鉴权库缺失用户数据，需联系引擎管理添加，但这不影响表的创建，只是鉴权数据中owner为空 - 录入表: "+dbName+"."+tableName+" - 缺失owner: "+owner);
+                throw new MetaException("鉴权库缺失用户数据，已经自动触发添加，不影响表的创建，但请联系管理员告知这种意外 - 录入表: "+dbName+"."+tableName+" - 补充的owner: "+owner);
             } else {
                 LOGGER.info("表信息录入成功 表:{} owner:{} 字段:{}",dbName+"."+tableName,owner,tmp.toString());
             }
@@ -204,8 +209,8 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         //将外部权限库中的表、字段全系数据删除
         Connection connection=null;
         try {
-            connection = mysqlUtil.getConnection();
-            CallableStatement callableStatement = connection.prepareCall("{call DeleteTableAndAuth(?)}");
+            connection = mysqlUtil.getConnection(false);
+            CallableStatement callableStatement = connection.prepareCall(dropTbInfo);
             callableStatement.setString(1,dbName+"."+tableName);
             ResultSet resultSet = callableStatement.executeQuery();
             ResultSetMetaData metaData = resultSet.getMetaData();
@@ -304,16 +309,15 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         }
 
         List<FieldSchema> deletedFields = fieldDiff.deletedFields;
-        //对于判定为删除的字段，要做什么操作
-        // 通常是回收所以字段已经失效的权限数据
+        // 对于判定为删除的字段，要做什么操作 通常是回收已经失效的权限数据
         if (deletedFields != null && !deletedFields.isEmpty() && deletedFields.size()!=0) {
             changed = true;
             LOGGER.info("删除字段 {}",deletedFields);
             Connection connection = null;
             try {
-                connection = mysqlUtil.getConnection();
-
+                connection = mysqlUtil.getConnection(false);
                 StringBuilder sql = new StringBuilder();
+                //这个语句中 in 部分用占位符会出问题，所以反正要拼接就没有提升sql主体的作用域
                 sql.append("delete from db_tb_auth where db_tb_id in ")
                         .append("(select db_tb_id from db_tb_info where db_tb_name='")
                         .append(oldtable.getDbName()).append(".").append(oldtable.getTableName())
@@ -343,8 +347,9 @@ public class MyMetaStoreEventListener extends MetaStoreEventListener {
         if (changed) {
             Connection connection = null;
             try {
-                connection = mysqlUtil.getConnection();
-                PreparedStatement preparedStatement = connection.prepareStatement("update db_tb_info set tb_fields = ? where db_tb_name=? ");
+                connection = mysqlUtil.getConnection(false);
+
+                PreparedStatement preparedStatement = connection.prepareStatement(updateTbInfo);
                 preparedStatement.setString(1, fieldDiff.fieldNames);
                 preparedStatement.setString(2,newTable.getDbName()+"."+newTable.getTableName());
                 int i = preparedStatement.executeUpdate();

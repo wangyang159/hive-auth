@@ -49,10 +49,14 @@ public class MysqlUtil {
 
     /**
      * 获取连接的方法
+     *
+     * @param useFlag 是否标记使用
      */
-    public Connection getConnection() throws SQLException {
+    public Connection getConnection(boolean useFlag) throws SQLException {
         Connection connection = dataSource.getConnection();
-        conns.add(connection);
+        if (useFlag) {
+            conns.add(connection);
+        }
         return connection;
     }
 
@@ -73,10 +77,12 @@ public class MysqlUtil {
      * 关闭所有连接的方法，但是不关连接池
      */
     public void closeAllConnection() {
-        for (Connection connection : conns) {
-            closeConnection(connection);
+        if (conns != null && !conns.isEmpty()) {
+            for (Connection connection : conns) {
+                closeConnection(connection);
+            }
+            conns.clear();
         }
-        conns.clear();
     }
 
 }

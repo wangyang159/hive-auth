@@ -1,33 +1,33 @@
 当前插件已实现的能力如下表
 
-| 功能点                      | 当前插件实现                                                                                                                                                      | 二次改造代码地点                                                     |
-|--------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------|
-| hive原生自带授权语句             | 屏蔽                                                                                                                                                          | MyHiveAuthorization.checkPrivileges                          |
-| 普通查询，或结果集建表、结果集插入表       | 当前用户是否为落盘表owner，否则直接拒绝，内部对下游权限对象操作做了判断，因此结果集建表并不会触发不在预期内的权限检查<br/><br/>当前用户是否为查询表owner，否则进行字段级鉴权                                                            | MyHiveAuthorization.checkPrivileges                          |
-| 查询表是否允许越过字段              | 不允许select语句不携带任何字段，例如select count(1) from a                                                                                                                 | MyHiveAuthorization.checkPrivileges                          |
-| 清空表数据                    | 当前用户是否为操作表的owner，否则直接拒绝                                                                                                                                     | MyHiveAuthorization.checkPrivileges                          |
-| 展示表或库资源列表                | 并没有做特别过滤，目前是hive返回什么就展示什么                                                                                                                                   | MyHiveAuthorization.filterListCmdObjects                     |
-| 展示单张表的详情信息，也就是DESCTABLE时 | 需要owner权限                                                                                                                                                   | MyHiveAuthorization.checkPrivileges                          |
-| 建表执行前                    | 视图不做限制外，表名和字段名长度要符合外部鉴权库数据长度限制这个是在代码中写死的，所以改鉴权库的表结构后需要改代码<br/><br/>预留了路径的校验，可以扩展路径格式等<br/><br/>不对Paimon表做路径的校验<br/><br/>表location不能超过500个字符，和字段一样要和鉴权库中保持一致 | MyMetaStorePreEventListener.onEvent.CREATE_TABLE             |
-| 建表成功后                    | 将表信息写入鉴权库<br/><br/>预留了扩展                                                                                                                                    | MyMetaStoreEventListener.onCreateTable                       |
-| 改表结构执行前                  | 视图不做限制外，非owner不能改表结构<br/><br/>不允许变更库名和表名<br/><br/>不允许改表location<br/>预留了其他不能改表限制的位置                                                                          | MyMetaStorePreEventListener.onEvent.ALTER_TABLE              |
-| 改表结构成功后                  | 视图不做限制外，已删除的表字段权限回收(hive不允许直接删除字段，但运行调整字段顺序时缺省字段来达到删除目的)<br/><br/>当表字段发生变动后同步维护鉴权库中的表字段列表<br/><br/>预留允许的location变更之后干什么                                     | MyMetaStoreEventListener.onAlterTable                        |
-| 删除表执行前                   | 检查是否是owner，不是则拒绝                                                                                                                                            | MyMetaStorePreEventListener.onEvent.DROP_TABLE               |
-| 删除表成功后                   | 回收外部权限库中的该表所有的权限、表信息                                                                                                                                        | MyMetaStoreEventListener.onDropTable                         |
-| 新增表分区执行前                 | 不操作视图和路径在元数据服务中未知的表<br/><br/>新增的分区路径不能在表路径之外                                                                                                                | MyMetaStorePreEventListener.onEvent.ADD_PARTITION            |
-| 新增表分区成功后                 | 预留了扩展代码                                                                                                                                                     | MyMetaStoreEventListener.onAddPartition                      |
-| 删除表分区执行前                 | 检查是否是owner                                                                                                                                                  | MyMetaStorePreEventListener.onEvent.DROP_PARTITION           |
-| 删除表分区成功后                 | 预留扩展代码                                                                                                                                                      | MyMetaStoreEventListener.onDropPartition                     |
-| 更改表分区执行前                 | 阻止视图和alluxio meta的表被操作                                                                                                                                      | MyMetaStorePreEventListener.onEvent.ALTER_PARTITION          |
-| 更改表分区成功后                 | 预留扩展代码                                                                                                                                                      | MyMetaStoreEventListener.onAlterPartition                    |
-| 更改表分区存储路径                | 和表存储路径一样不允许                                                                                                                                                 | MyHiveAuthorization.checkPrivileges                          |
-| 更改库信息执行前                 | 拒绝所有库信息的更改更改，原因和表存储路径一样，具体见表存储变更检查代码中的注释                                                                                                                    | MyMetaStorePreEventListener.onEvent.ALTER_DATABASE           |
-| 建库执行前                    | 必须携带库路径                                                                                                                                                     | MyMetaStorePreEventListener.onEvent.CREATE_DATABASE          |
-| 删库执行前                    | 拒绝所有删库操作                                                                                                                                                    | MyMetaStorePreEventListener.onEvent.DROP_DATABASE            |
-| 创建永久函数执行前                | 拒绝创建永久函数，只能使用add语句用临时函数                                                                                                                                     | MyMetaStorePreEventListener.onEvent.CREATE_FUNCTION          |
-| 删除永久函数执行前                | 拒绝删除已有的永久函数                                                                                                                                                 | MyMetaStorePreEventListener.onEvent.DROP_FUNCTION            |
-| 手动生成数据库的元数据信息库前          | 禁止                                                                                                                                                          | MyMetaStorePreEventListener.onEvent.CREATE_ISCHEMA 开始的六个操作类型 |
-| catalog操作                | 禁止                                                                                                                                                          | MyMetaStorePreEventListener.onEvent.ALTER_CATALOG 开始的三个操作类型  |
+| 功能点                      | 当前插件实现                                                                                                                                                     | 二次改造代码地点                                                     |
+|--------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------|
+| hive原生自带授权语句             | 屏蔽                                                                                                                                                         | MyHiveAuthorization.checkPrivileges                          |
+| 普通查询，或结果集建表、结果集插入表       | 当前用户是否为落盘表owner，否则直接拒绝，内部对下游权限对象操作做了判断，因此结果集建表并不会触发不在预期内的权限检查<br/><br/>当前用户是否为查询表owner，否则进行字段级鉴权                                                           | MyHiveAuthorization.checkPrivileges                          |
+| 查询表是否允许越过字段              | 不允许select语句不携带任何字段，例如select count(1) from a                                                                                                                | MyHiveAuthorization.checkPrivileges                          |
+| 清空表数据                    | 当前用户是否为操作表的owner，否则直接拒绝                                                                                                                                    | MyHiveAuthorization.checkPrivileges                          |
+| 展示表或库资源列表                | 并没有做特别过滤，目前是hive返回什么就展示什么                                                                                                                                  | MyHiveAuthorization.filterListCmdObjects                     |
+| 展示单张表的详情信息，也就是DESCTABLE时 | 需要owner权限                                                                                                                                                  | MyHiveAuthorization.checkPrivileges                          |
+| 建表执行前                    | 视图不做限制外，表名和字段名长度要符合外部鉴权库数据长度限制，这个是在代码中写死的，所以改鉴权库的表结构后需要改代码<br/><br/>除非是Paimon表不做路径的校验，其他情况外表会检查表路径是否已经被使用，无论内、外表location不能超过500个字符，和字段一样长度要和鉴权库中存储字段长度保持一致 | MyMetaStorePreEventListener.onEvent.CREATE_TABLE             |
+| 建表成功后                    | 将表信息写入鉴权库<br/><br/>预留了扩展                                                                                                                                   | MyMetaStoreEventListener.onCreateTable                       |
+| 改表结构执行前                  | 视图不做限制外，非owner不能改表结构<br/><br/>不允许变更库名和表名<br/><br/>不允许改表location<br/>预留了其他不能改表限制的位置                                                                         | MyMetaStorePreEventListener.onEvent.ALTER_TABLE              |
+| 改表结构成功后                  | 视图不做限制外，已删除的表字段权限回收(hive不允许直接删除字段，但运行调整字段顺序时缺省字段来达到删除目的)<br/><br/>当表字段发生变动后同步维护鉴权库中的表字段列表<br/><br/>预留允许的location变更之后干什么                                    | MyMetaStoreEventListener.onAlterTable                        |
+| 删除表执行前                   | 检查是否是owner，不是则拒绝                                                                                                                                           | MyMetaStorePreEventListener.onEvent.DROP_TABLE               |
+| 删除表成功后                   | 回收外部权限库中的该表所有的权限、表信息                                                                                                                                       | MyMetaStoreEventListener.onDropTable                         |
+| 新增表分区执行前                 | 不操作视图和路径在元数据服务中未知的表<br/><br/>新增的分区路径不能在表路径之外                                                                                                               | MyMetaStorePreEventListener.onEvent.ADD_PARTITION            |
+| 新增表分区成功后                 | 预留了扩展代码                                                                                                                                                    | MyMetaStoreEventListener.onAddPartition                      |
+| 删除表分区执行前                 | 检查是否是owner                                                                                                                                                 | MyMetaStorePreEventListener.onEvent.DROP_PARTITION           |
+| 删除表分区成功后                 | 预留扩展代码                                                                                                                                                     | MyMetaStoreEventListener.onDropPartition                     |
+| 更改表分区执行前                 | 阻止视图和alluxio meta的表被操作                                                                                                                                     | MyMetaStorePreEventListener.onEvent.ALTER_PARTITION          |
+| 更改表分区成功后                 | 预留扩展代码                                                                                                                                                     | MyMetaStoreEventListener.onAlterPartition                    |
+| 更改表分区存储路径                | 和表存储路径一样不允许                                                                                                                                                | MyHiveAuthorization.checkPrivileges                          |
+| 更改库信息执行前                 | 拒绝所有库信息的更改，原因和表存储路径一样，具体见表存储变更检查代码中的注释                                                                                                                     | MyMetaStorePreEventListener.onEvent.ALTER_DATABASE           |
+| 建库执行前                    | 必须携带库路径<br/><br/>库路径为了和表路径的500长度限制配合，所以限制了最长400个字符                                                                                                         | MyMetaStorePreEventListener.onEvent.CREATE_DATABASE          |
+| 删库执行前                    | 拒绝所有删库操作                                                                                                                                                   | MyMetaStorePreEventListener.onEvent.DROP_DATABASE            |
+| 创建永久函数执行前                | 拒绝创建永久函数，只能使用add语句用临时函数                                                                                                                                    | MyMetaStorePreEventListener.onEvent.CREATE_FUNCTION          |
+| 删除永久函数执行前                | 拒绝删除已有的永久函数                                                                                                                                                | MyMetaStorePreEventListener.onEvent.DROP_FUNCTION            |
+| 手动生成数据库的元数据信息库前          | 禁止                                                                                                                                                         | MyMetaStorePreEventListener.onEvent.CREATE_ISCHEMA 开始的六个操作类型 |
+| catalog操作                | 禁止                                                                                                                                                         | MyMetaStorePreEventListener.onEvent.ALTER_CATALOG 开始的三个操作类型  |
 
 
 注意，该插件对于外部鉴权库中的数据，主要是读取，表owner相关权限并不是来自于鉴权库，而是依赖hive元数据服务中存储的owner ，因此不会对表owner的鉴权走外部权限数据库
@@ -182,7 +182,7 @@ DROP PROCEDURE IF EXISTS `DeleteTableAndAuth`;
 delimiter ;;
 CREATE PROCEDURE `DeleteTableAndAuth`(IN in_db_tb_name VARCHAR(100) CHARACTER SET utf8 COLLATE utf8_general_ci)
 BEGIN
-    -- 准备三个需要的变量
+    -- 需要的变量：表id、删除了多少权限、删除了多少表消息
     DECLARE in_db_tb_id INT;
     DECLARE auth_deleted INT DEFAULT 0;
     DECLARE info_deleted INT DEFAULT 0;
@@ -195,7 +195,7 @@ BEGIN
 
     -- 如果找到表
     IF in_db_tb_id IS NOT NULL THEN
-        START TRANSACTION;
+        START TRANSACTION;-- 因为涉及到删除，所以用事务
 
         -- 删除权限记录
         DELETE FROM db_tb_auth
@@ -224,11 +224,11 @@ END ;;
 delimiter ;
 
 -- ----------------------------
--- 建表后表信息写入的存储过程：传入 建表用户名 、 库.表名 、字段列表
+-- 建表后表信息写入的存储过程：传入 建表用户名 、 库.表名 、字段列表 、 表存储路径
 -- 在这个存储过程中查询已有用户id查不到则返回-1，由程序内部去做逻辑返回
 -- 而不是用户不存在则插入用户，是因为鉴权数据的维护并不应该，且正常也不会直接面向用户
 -- 而是中间存在一个外部鉴权功能的系统，应该由这个系统以及整个技术环境统一维护所有用户相关的信息
--- 而不是鉴权模块自己维护，因此这里没有用户返回 -1
+-- 而不是鉴权模块自己维护，因此这里没有用户返回 -1 反之正常新增表消息，返回受影响行数
 -- ----------------------------
 DROP PROCEDURE IF EXISTS `InsertTableInfo`;
 DELIMITER ;;
@@ -239,29 +239,110 @@ CREATE PROCEDURE `InsertTableInfo`(
     IN in_tb_location VARCHAR(500) CHARACTER SET utf8 COLLATE utf8_general_ci
 )
 BEGIN
-    DECLARE v_user_id INT;
-    DECLARE v_affected_rows INT DEFAULT 0;
+    -- 用户id 、 受影响行数
+    DECLARE in_user_id INT;
+    DECLARE in_affected_rows INT DEFAULT 0;
 
     -- 1. 查询用户ID
-    SELECT user_id INTO v_user_id
+    SELECT user_id INTO in_user_id
     FROM user_info
     WHERE user_name = in_user_name
     LIMIT 1;
 
-    -- 2. 用户不存在时返回-1
-    IF v_user_id IS NULL THEN
-        INSERT INTO db_tb_info (db_tb_name, tb_fields, tb_location) VALUES (in_db_tb_name, in_tb_fields, in_tb_location);
+    -- 2. 用户不存在，则新增数据，并最终返回-1
+    IF in_user_id IS NULL THEN
+        INSERT INTO user_info (user_name) VALUES (in_user_name);
+        SET in_user_id = LAST_INSERT_ID();
+        INSERT INTO db_tb_info (user_id, db_tb_name, tb_fields, tb_location) VALUES (in_user_id, in_db_tb_name, in_tb_fields, in_tb_location);
         SELECT -1 AS result;
     ELSE
         -- 3. 存在插入数据表信息
-        INSERT INTO db_tb_info (user_id, db_tb_name, tb_fields, tb_location) VALUES (v_user_id, in_db_tb_name, in_tb_fields, in_tb_location);
+        INSERT INTO db_tb_info (user_id, db_tb_name, tb_fields, tb_location) VALUES (in_user_id, in_db_tb_name, in_tb_fields, in_tb_location);
 
         -- 4. 获取并返回受影响行数
-        SET v_affected_rows = ROW_COUNT();
-        SELECT v_affected_rows AS result;
+        SET in_affected_rows = ROW_COUNT();
+        SELECT in_affected_rows AS result;
     END IF;
 END ;;
 DELIMITER ;
+
+-- ----------------------------
+-- ranger-hdfs鉴权时调用的存储过程，传入用户名 、访问路径 、 是否经过检查owner的逻辑，传入 0 则不检查owner
+-- mysql 中 true(1) false(0) 和c语言是一样的非0为真
+-- 返回 -1 说明当前路径不是一个表路径
+-- 返回 0  说明是表路径，但权限不够 同时携带表名
+-- 返回 1 则说明是表路径，且权限足够 同时携带表名
+-- ----------------------------
+DROP PROCEDURE IF EXISTS `RangerAuthCheck`;
+delimiter ;;
+CREATE PROCEDURE `RangerAuthCheck`(
+    IN in_user_name VARCHAR(100) CHARACTER SET utf8 COLLATE utf8_general_ci,
+    IN in_path varchar(500) CHARACTER SET utf8 COLLATE utf8_general_ci,
+    IN check_owner int
+)
+BEGIN
+    -- 表id、表字段列表、表名称、表字段个数、拥有字段权限的个数、owner检查的结果 0 非owner 1 则是owner
+    DECLARE in_db_tb_id INT;
+    DECLARE in_tb_fields text;
+    DECLARE in_db_tb_name varchar(100);
+    DECLARE in_tb_fields_size INT;
+    DECLARE in_have_tb_fields_size INT;
+    DECLARE in_check_owner INT;
+
+    -- 查找表ID
+    SELECT
+        db_tb_id,tb_fields,db_tb_name INTO in_db_tb_id,in_tb_fields,in_db_tb_name
+    FROM db_tb_info FORCE INDEX(表存储路径索引)
+    -- 路径的hdfs前缀写在了数据库中,预防有变化的时候,本质上是因为ranger鉴权中的路径失败是 / 开头的，而不是 hdfs:// 开头
+    -- 其他鉴权组件内部用的都是hive处理好的 hdfs:// 开头的完整路径
+    WHERE concat('hdfs://node1:9000',in_path) like concat(tb_location,'%')
+    ORDER BY tb_location DESC
+    LIMIT 1;
+
+    -- 不是一个表路径，则返回 -1 表示不需要做字段相关的鉴权
+    if in_db_tb_id is null then
+        select -1 as result;
+    else
+        -- 查询这个表的owner，这是个防御写法，程序中调用时一般传入 0 并提前检查owner
+        if check_owner = 1 then
+            select b.user_name = in_user_name into in_check_owner
+            from db_tb_info a inner join user_info b
+                on a.user_id=b.user_id where a.db_tb_id=in_db_tb_id ;
+            if in_check_owner = 1 then
+                select 1 as result;-- 返回有权限的标识
+            else
+                -- 如果是表路径，也就是查询表id不空，且不是owner，则计算出这个表有几个字段
+                select (length(in_tb_fields)-length(replace(in_tb_fields,',','')))+1 into in_tb_fields_size;
+                -- 计算出这个用户有目的表多少个字段权限
+                select
+                    count(a.field) into in_have_tb_fields_size
+                from db_tb_auth a
+                         inner join user_info b on a.user_id=b.user_id
+                where a.auth_flag>=1 and a.last_time>=now() 
+                  and b.user_name=in_user_name and a.db_tb_id=in_db_tb_id;
+                -- 表字段个数和已有权限字段格式是否相当
+                select
+                    in_tb_fields_size = in_have_tb_fields_size as result,
+                    in_db_tb_name;
+            end if ;-- 是否因 owner 直接返回
+        else
+            -- 如果是表路径，id不空，则计算出这个表有几个字段
+            select (length(in_tb_fields)-length(replace(in_tb_fields,',','')))+1 into in_tb_fields_size;
+            -- 计算出这个用户有目的表多少个字段权限
+            select
+                count(a.field) into in_have_tb_fields_size
+            from db_tb_auth a
+                     inner join user_info b on a.user_id=b.user_id
+            where a.auth_flag>=1 and a.last_time>=now() 
+              and b.user_name=in_user_name and a.db_tb_id=in_db_tb_id;
+            -- 表字段个数和已有权限字段格式是否相当
+            select
+                in_tb_fields_size = in_have_tb_fields_size as result,
+                in_db_tb_name;
+        end if ;-- 这个结束的是是否检查owner
+    end if ;-- 这个end if 结束的是最外面是否查到表的if语句
+END ;;
+delimiter ;
 
 SET FOREIGN_KEY_CHECKS = 1;
 ```
@@ -308,7 +389,7 @@ SET FOREIGN_KEY_CHECKS = 1;
 </property>
 
 <!--
-MetaStoreEventListener 元数据权限监控组件运行在服务端的meta进程中
+元数据权限监控组件运行在服务端的meta进程中
 且内部同样采用持久化的线程池与鉴权库交互，因此作为服务级别的线程池大的个数要大一些
 默认100
 -->
