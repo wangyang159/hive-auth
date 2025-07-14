@@ -9,7 +9,7 @@
 | 展示表或库资源列表                | 并没有做特别过滤，目前是hive返回什么就展示什么                                                                                                                                  | MyHiveAuthorization.filterListCmdObjects                     |
 | 展示单张表的详情信息，也就是DESCTABLE时 | 需要owner权限                                                                                                                                                  | MyHiveAuthorization.checkPrivileges                          |
 | 建表执行前                    | 视图不做限制外，表名和字段名长度要符合外部鉴权库数据长度限制，这个是在代码中写死的，所以改鉴权库的表结构后需要改代码<br/><br/>除非是Paimon表不做路径的校验，其他情况外表会检查表路径是否已经被使用，无论内、外表location不能超过500个字符，和字段一样长度要和鉴权库中存储字段长度保持一致 | MyMetaStorePreEventListener.onEvent.CREATE_TABLE             |
-| 建表成功后                    | 将表信息写入鉴权库<br/><br/>预留了扩展                                                                                                                                   | MyMetaStoreEventListener.onCreateTable                       |
+| 建表成功后                    | 将表信息写入鉴权库，注意会写入owner关系，如果此时owner缺失会补一条数据并报错，但不影响用户建表，不过当前用户名称鉴权库中是100的长度<br/><br/>预留了扩展                                                                    | MyMetaStoreEventListener.onCreateTable                       |
 | 改表结构执行前                  | 视图不做限制外，非owner不能改表结构<br/><br/>不允许变更库名和表名<br/><br/>不允许改表location<br/>预留了其他不能改表限制的位置                                                                         | MyMetaStorePreEventListener.onEvent.ALTER_TABLE              |
 | 改表结构成功后                  | 视图不做限制外，已删除的表字段权限回收(hive不允许直接删除字段，但运行调整字段顺序时缺省字段来达到删除目的)<br/><br/>当表字段发生变动后同步维护鉴权库中的表字段列表<br/><br/>预留允许的location变更之后干什么                                    | MyMetaStoreEventListener.onAlterTable                        |
 | 删除表执行前                   | 检查是否是owner，不是则拒绝                                                                                                                                           | MyMetaStorePreEventListener.onEvent.DROP_TABLE               |
@@ -107,7 +107,7 @@ logger.MyMetaPreStore.level = INFO
 
 注意：需要至少 MySQL 5.5.3+ 的数据库
 
-```sql
+```
 /*
  Navicat Premium Data Transfer
 
@@ -130,13 +130,41 @@ CREATE DATABASE IF NOT EXISTS hive_auth CHARACTER SET utf8 COLLATE utf8_general_
 use hive_auth;
 
 -- ----------------------------
+-- 用户信息表
+-- ----------------------------
+DROP TABLE IF EXISTS `user_info`;
+CREATE TABLE `user_info`  (
+                              `user_id` varchar(36) NOT NULL COMMENT '用户信息主键',
+                              `user_name` varchar(100) CHARACTER SET utf8 COLLATE utf8_general_ci NULL DEFAULT NULL COMMENT '用户名',
+                              PRIMARY KEY (`user_id`) USING BTREE,
+                              UNIQUE INDEX `用户名称索引`(`user_name`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 3 CHARACTER SET = utf8 COLLATE = utf8_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
+-- hive表信息
+-- ----------------------------
+DROP TABLE IF EXISTS `db_tb_info`;
+CREATE TABLE `db_tb_info`  (
+                               `db_tb_id` varchar(36) NOT NULL COMMENT '表信息id',
+                               `user_id` varchar(36) NULL DEFAULT NULL COMMENT 'owner-id',
+                               `db_tb_name` varchar(100) CHARACTER SET utf8 COLLATE utf8_general_ci NULL DEFAULT NULL COMMENT '库名.表名',
+                               `tb_fields` text CHARACTER SET utf8 COLLATE utf8_general_ci NULL DEFAULT NULL COMMENT '表的字段列表英文逗号分割',
+                               `tb_location` varchar(500) CHARACTER SET utf8 COLLATE utf8_general_ci NULL DEFAULT NULL COMMENT '表存储路径',
+                               PRIMARY KEY (`db_tb_id`) USING BTREE,
+                               UNIQUE INDEX `表名称索引`(`db_tb_name`) USING BTREE,
+                               UNIQUE INDEX `表存储路径索引`(`tb_location`) USING BTREE,
+                               INDEX `表的owner`(`user_id`) USING BTREE,
+                               CONSTRAINT `表的owner` FOREIGN KEY (`user_id`) REFERENCES `user_info` (`user_id`) ON DELETE RESTRICT ON UPDATE RESTRICT
+) ENGINE = InnoDB AUTO_INCREMENT = 7 CHARACTER SET = utf8 COLLATE = utf8_general_ci ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- 权限表
 -- ----------------------------
 DROP TABLE IF EXISTS `db_tb_auth`;
 CREATE TABLE `db_tb_auth`  (
-                               `auth_id` int(4) NOT NULL AUTO_INCREMENT COMMENT '权限表主键',
-                               `db_tb_id` int(4) NULL DEFAULT NULL COMMENT '表信息主键',
-                               `user_id` int(4) NULL DEFAULT NULL COMMENT '用户信息主键',
+                               `auth_id` varchar(36) NOT NULL COMMENT '权限表主键',
+                               `db_tb_id` varchar(36) NULL DEFAULT NULL COMMENT '表信息主键',
+                               `user_id` varchar(36) NULL DEFAULT NULL COMMENT '用户信息主键',
                                `field` varchar(50) CHARACTER SET utf8 COLLATE utf8_general_ci NULL DEFAULT NULL COMMENT '权限信息的主体字段',
                                `auth_flag` int(2) NULL DEFAULT NULL COMMENT '权限标识： 1 读取权限 ; 0 无任何权限',
                                `last_time` datetime(0) NULL DEFAULT NULL COMMENT '权限的到期时间',
@@ -149,34 +177,6 @@ CREATE TABLE `db_tb_auth`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 5 CHARACTER SET = utf8 COLLATE = utf8_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- hive表信息
--- ----------------------------
-DROP TABLE IF EXISTS `db_tb_info`;
-CREATE TABLE `db_tb_info`  (
-                               `db_tb_id` int(4) NOT NULL AUTO_INCREMENT COMMENT '表信息id',
-                               `user_id` int(4) NULL DEFAULT NULL COMMENT 'owner-id',
-                               `db_tb_name` varchar(100) CHARACTER SET utf8 COLLATE utf8_general_ci NULL DEFAULT NULL COMMENT '库名.表名',
-                               `tb_fields` text CHARACTER SET utf8 COLLATE utf8_general_ci NULL DEFAULT NULL COMMENT '表的字段列表英文逗号分割',
-                               `tb_location` varchar(500) CHARACTER SET utf8 COLLATE utf8_general_ci NULL DEFAULT NULL COMMENT '表存储路径',
-                               PRIMARY KEY (`db_tb_id`) USING BTREE,
-                               UNIQUE INDEX `表名称索引`(`db_tb_name`) USING BTREE,
-                               UNIQUE INDEX `表存储路径索引`(`tb_location`) USING BTREE,
-                               INDEX `表的owner`(`user_id`) USING BTREE,
-                               CONSTRAINT `表的owner` FOREIGN KEY (`user_id`) REFERENCES `user_info` (`user_id`) ON DELETE RESTRICT ON UPDATE RESTRICT
-) ENGINE = InnoDB AUTO_INCREMENT = 7 CHARACTER SET = utf8 COLLATE = utf8_general_ci ROW_FORMAT = Dynamic;
-
--- ----------------------------
--- 用户信息表
--- ----------------------------
-DROP TABLE IF EXISTS `user_info`;
-CREATE TABLE `user_info`  (
-                              `user_id` int(4) NOT NULL AUTO_INCREMENT COMMENT '用户信息主键',
-                              `user_name` varchar(100) CHARACTER SET utf8 COLLATE utf8_general_ci NULL DEFAULT NULL COMMENT '用户名',
-                              PRIMARY KEY (`user_id`) USING BTREE,
-                              UNIQUE INDEX `用户名称索引`(`user_name`) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 3 CHARACTER SET = utf8 COLLATE = utf8_general_ci ROW_FORMAT = Dynamic;
-
--- ----------------------------
 -- 删表权限回收时用到的存储过程：传入 库.表名
 -- 其中直接操作了删除和新增，是因为hive中库+表名的情况下是不可能重复的
 -- hive自己的元数据服务就会做这方面的安全检查
@@ -186,7 +186,7 @@ delimiter ;;
 CREATE PROCEDURE `DeleteTableAndAuth`(IN in_db_tb_name VARCHAR(100) CHARACTER SET utf8 COLLATE utf8_general_ci)
 BEGIN
     -- 需要的变量：表id、删除了多少权限、删除了多少表消息
-    DECLARE in_db_tb_id INT;
+    DECLARE in_db_tb_id varchar(36) ;
     DECLARE auth_deleted INT DEFAULT 0;
     DECLARE info_deleted INT DEFAULT 0;
 
@@ -243,7 +243,7 @@ CREATE PROCEDURE `InsertTableInfo`(
 )
 BEGIN
     -- 用户id 、 受影响行数
-    DECLARE in_user_id INT;
+    DECLARE in_user_id varchar(36);
     DECLARE in_affected_rows INT DEFAULT 0;
 
     -- 1. 查询用户ID
@@ -254,13 +254,18 @@ BEGIN
 
     -- 2. 用户不存在，则新增数据，并最终返回-1
     IF in_user_id IS NULL THEN
-        INSERT INTO user_info (user_name) VALUES (in_user_name);
-        SET in_user_id = LAST_INSERT_ID();
-        INSERT INTO db_tb_info (user_id, db_tb_name, tb_fields, tb_location) VALUES (in_user_id, in_db_tb_name, in_tb_fields, in_tb_location);
+        START TRANSACTION;
+        
+        SET in_user_id = UUID();
+        INSERT INTO user_info (user_id,user_name) VALUES (in_user_id,in_user_name);
+        INSERT INTO db_tb_info (db_tb_id, user_id, db_tb_name, tb_fields, tb_location) VALUES (UUID(), in_user_id, in_db_tb_name, in_tb_fields, in_tb_location);
+        
+        COMMIT ;
+        
         SELECT -1 AS result;
     ELSE
         -- 3. 存在插入数据表信息
-        INSERT INTO db_tb_info (user_id, db_tb_name, tb_fields, tb_location) VALUES (in_user_id, in_db_tb_name, in_tb_fields, in_tb_location);
+        INSERT INTO db_tb_info (db_tb_id, user_id, db_tb_name, tb_fields, tb_location) VALUES (UUID(), in_user_id, in_db_tb_name, in_tb_fields, in_tb_location);
 
         -- 4. 获取并返回受影响行数
         SET in_affected_rows = ROW_COUNT();
@@ -285,7 +290,7 @@ CREATE PROCEDURE `RangerAuthCheck`(
 )
 BEGIN
     -- 表id、表字段列表、表名称、表字段个数、拥有字段权限的个数、owner检查的结果 0 非owner 1 则是owner
-    DECLARE in_db_tb_id INT;
+    DECLARE in_db_tb_id varchar(36);
     DECLARE in_tb_fields text;
     DECLARE in_db_tb_name varchar(100);
     DECLARE in_tb_fields_size INT;
@@ -306,43 +311,44 @@ BEGIN
     if in_db_tb_id is null then
         select -1 as result;
     else
-        -- 查询这个表的owner，这是个防御写法，程序中调用时一般传入 0 并提前检查owner
+        -- 反之，可以根据入参查询这个表的owner，这是个防御写法，程序中调用时一般传入 0 并提前检查owner
         if check_owner = 1 then
             select b.user_name = in_user_name into in_check_owner
             from db_tb_info a inner join user_info b
-                on a.user_id=b.user_id where a.db_tb_id=in_db_tb_id ;
+                                         on a.user_id=b.user_id where a.db_tb_id=in_db_tb_id ;
+            -- 如果当前用户是owner，就不走后面的else了，直接返回有权限的标识
             if in_check_owner = 1 then
-                select 1 as result;-- 返回有权限的标识
+                select 1 as result,in_db_tb_name;
             else
-                -- 如果是表路径，也就是查询表id不空，且不是owner，则计算出这个表有几个字段
+                -- 反之不是owner，则计算出这个表有几个字段
                 select (length(in_tb_fields)-length(replace(in_tb_fields,',','')))+1 into in_tb_fields_size;
                 -- 计算出这个用户有目的表多少个字段权限
                 select
                     count(a.field) into in_have_tb_fields_size
                 from db_tb_auth a
                          inner join user_info b on a.user_id=b.user_id
-                where a.auth_flag>=1 and a.last_time>=now() 
+                where a.auth_flag>=1 and a.last_time>=now()
                   and b.user_name=in_user_name and a.db_tb_id=in_db_tb_id;
                 -- 表字段个数和已有权限字段格式是否相当
                 select
                     in_tb_fields_size = in_have_tb_fields_size as result,
                     in_db_tb_name;
-            end if ;-- 是否因 owner 直接返回
+            end if ;-- 是否owner相关的if体结束
         else
-            -- 如果是表路径，id不空，则计算出这个表有几个字段
+            -- 如果是表路径，且不用检查owner，同时查出的表id不空，则直接走上面owner的else流程
             select (length(in_tb_fields)-length(replace(in_tb_fields,',','')))+1 into in_tb_fields_size;
             -- 计算出这个用户有目的表多少个字段权限
             select
                 count(a.field) into in_have_tb_fields_size
             from db_tb_auth a
                      inner join user_info b on a.user_id=b.user_id
-            where a.auth_flag>=1 and a.last_time>=now() 
+            where a.auth_flag>=1 and a.last_time>=now()
               and b.user_name=in_user_name and a.db_tb_id=in_db_tb_id;
             -- 表字段个数和已有权限字段格式是否相当
             select
                 in_tb_fields_size = in_have_tb_fields_size as result,
                 in_db_tb_name;
-        end if ;-- 这个结束的是是否检查owner
+        end if ;-- 是否检查owner的if体结束
     end if ;-- 这个end if 结束的是最外面是否查到表的if语句
 END ;;
 delimiter ;
