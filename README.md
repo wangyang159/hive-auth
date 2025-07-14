@@ -105,9 +105,9 @@ logger.MyMetaPreStore.level = INFO
 
 4、整体上采用外部鉴权数据，因此下面需要配置鉴权数据库，并在准备好的鉴权库中执行如下语句，生成鉴权数据相关表
 
-注意：需要至少 MySQL 5.5.3+ 的数据库
+`注意：需要至少 MySQL 5.5.3+ 的数据库，当前数据表的主键使用了全不UUID的36位数据，如果具体使用中觉得太长，可以只保留UUID的前8位就行`
 
-```
+```sql
 /*
  Navicat Premium Data Transfer
 
